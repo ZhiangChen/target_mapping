@@ -1,0 +1,3 @@
+[submodule "KLT_Feature_Tracking"]
+	path = KLT_Feature_Tracking
+	url = https://github.com/ZhiangChen/KLT_Feature_Tracking.git

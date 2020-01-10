@@ -21,3 +21,21 @@ b. target_tracker(Particle filter)
 subscriber_1: refined bbox from bbox_tracker  
 subscriber_2: coarse global coordinates of camera  
 publisher_1: pointcloud estimation of targets
+
+
+## Conventions
+#### 1. image coordinate systems
+![image_coord.png](./img/coord_sys.png)
+
+
+#### 2. bounding box coordinate system
+![image_coord.png](./img/bbox_coord.png)
+
+Bounding box uses the drawing coordinate system. The following is an example  
+`bbox = np.array([[[291,187],[405,187],[291,267],[405,267]]])`  
+If we want to crop an image with a bounding box,  
+```buildoutcfg
+(xmin, ymin, boxw, boxh) = cv2.boundingRect(bbox[0,:,:].astype(int))
+roi = img[ymin:ymin+boxh,xmin:xmin+boxw]
+```
+

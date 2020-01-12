@@ -22,6 +22,22 @@ subscriber_1: refined bbox from bbox_tracker
 subscriber_2: coarse global coordinates of camera  
 publisher_1: pointcloud estimation of targets
 
+## Simulation
+#### 1. ros packages
+[gazebo_sim_models](https://github.com/ZhiangChen/ros_vision)  
+[terrain_following](https://github.com/ZhiangChen/ros_vision/tree/vel_control/terrain_following)  
+#### 2. commands
+Terrain following navigation:  
+```
+roslaunch gazebe_sim_models mavros_iris_boulder_terrain.launch  
+rosrun terrain_following perception_model_cpp_main
+rosrun terrain_following mavros_vel_controller.py
+rosrun terrain_following waypoints_action_client.py
+```
+[YOLO](https://github.com/leggedrobotics/darknet_ros) (customized training is required):  
+```
+roslaunch darknet_ros darknet_ros_pbr.launch
+```
 
 ## Conventions
 #### 1. image coordinate systems

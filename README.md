@@ -29,7 +29,7 @@ publisher_1: pointcloud estimation of targets
 #### 2. commands
 Terrain following navigation:  
 ```
-roslaunch gazebe_sim_models mavros_iris_boulder_terrain.launch  
+roslaunch gazebo_sim_models mavros_iris_boulder_terrain.launch  
 rosrun terrain_following perception_model_cpp_main
 rosrun terrain_following mavros_vel_controller.py
 rosrun terrain_following waypoints_action_client.py

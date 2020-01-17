@@ -1,4 +1,7 @@
 # target_tracking
+Apache License 2.0 (c) 2020 Distributed Robotic Exploration and Mapping Systems Laboratory, ASU
+
+Zhiang Chen, Jan 2020
 
 ## Workflow
 1. Deep learning object detection
@@ -54,4 +57,3 @@ If we want to crop an image with a bounding box,
 (xmin, ymin, boxw, boxh) = cv2.boundingRect(bbox[0,:,:].astype(int))
 roi = img[ymin:ymin+boxh,xmin:xmin+boxw]
 ```
-

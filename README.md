@@ -10,6 +10,8 @@ Zhiang Chen, Jan 2020
 4. Camera model to generates a cone from the refined bounding box
 5. Particle filtering to produce pointclouds of targets.
 
+_Find more info on [Wiki](https://github.com/ZhiangChen/target_tracking/wiki)_
+
 ## ROS Packages
 #### 1. [darknet_ros](https://github.com/leggedrobotics/darknet_ros)
 It generates bounding boxes using deep neural networks.

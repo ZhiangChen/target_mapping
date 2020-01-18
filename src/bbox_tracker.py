@@ -17,6 +17,7 @@ import cv2
 import copy
 from numpy.linalg import inv
 
+#  todo: 1. KLT tracker singularity: deregistration
 
 
 class BBoxTracker(object):
@@ -25,7 +26,7 @@ class BBoxTracker(object):
         raw_image_sub = rospy.Subscriber('/r200/depth/image_raw', Image, self.raw_image_callback)
 
         self.bridge = CvBridge()
-        #self.pub = rospy.Publisher("/camera_reader", Image, queue_size=1)  # debug
+        self.pub = rospy.Publisher("/bbox_tracker/detection_image", Image, queue_size=1)  # debug
 
         self.bboxes_new = []
 
@@ -33,40 +34,64 @@ class BBoxTracker(object):
         self.Cov = []  # this is in Euclidean coordinate system
         self.image_new = np.zeros(1)
         self.image_old = np.zeros(1)
+        self.startXs = np.empty((20, 0), int)
+        self.startYs = np.empty((20, 0), int)
 
-        self.Q = np.diag((1., 1., 1., 1.))  # observation model noise covariance in Euclidean coordinate system
-        self.R = np.diag((2., 2., 0., 2., 2., 0.))  # motion model noise covariance in Homogeneous coordinate system
+        self.observation_done = False
+
+        self.Q = np.diag((.5, .5, .5, .5))  # observation model noise covariance in Euclidean coordinate system
+        self.R = np.diag((.5, .5, 0., .5, .5, 0.))  # motion model noise covariance in Homogeneous coordinate system
         rospy.loginfo("bbox_tracker initialized!")
 
         while not rospy.is_shutdown():
             # update observation model
-            if len(self.bboxes_new) > 0:
-                # clear cache
-                bboxes_new = copy.deepcopy(self.bboxes_new)
-                X = copy.deepcopy(self.X)
-                Cov = copy.deepcopy(self.Cov)
-                self.bboxes_new = []
-                # update image
-                self.image_old = copy.deepcopy(self.image_new)
-                self.image_new = np.zeros(1)
-                for i, bbox_new in enumerate(bboxes_new):
-                    # check if new bbox is existing
-                    idx = self.__checkRegistration(bbox_new, X)
-                    if idx == -1:
-                        X.append(bbox_new)
-                        Cov.append(self.Q)
-                    else:
-                        self.__updateObservation(bbox_new, idx, X, Cov)
+            if not self.observation_done:
+                if len(self.bboxes_new) > 0:
+                    if len(self.image_new.shape) == 3:
+                        self.observation_done = True
 
-                self.X = copy.deepcopy(X)
-                self.Cov = copy.deepcopy(Cov)
+                        # clear cache
+                        bboxes_new = copy.deepcopy(self.bboxes_new)
+                        X = copy.deepcopy(self.X)
+                        Cov = copy.deepcopy(self.Cov)
+                        self.bboxes_new = []
+                        # update image
+                        self.image_old = copy.deepcopy(self.image_new)
+                        self.image_new = np.zeros(1)
+                        for i, bbox_new in enumerate(bboxes_new):
+                            # check if new bbox is existing
+                            idx = self.__checkRegistration(bbox_new, X)
+                            if idx == -1:
+                                X.append(bbox_new)
+                                Cov.append(self.Q)
+                                self.bboxes_klt = self.__bbox_msg2np([bbox_new])
+                                startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt, use_shi=False)
+                                self.startXs = np.append(self.startXs, startXs, axis=1)
+                                self.startYs = np.append(self.startYs, startYs, axis=1)
+
+                            else:
+                                self.__updateObservation(bbox_new, idx, X, Cov)
+                                img = copy.deepcopy(self.image_old)
+                                image_msg = self.__draw_BBox(img, X)
+                                self.pub.publish(image_msg)
+
+                        self.X = [copy.deepcopy(X)[-1]]
+                        self.Cov = [copy.deepcopy(Cov)[-1]]
+                        #self.X = copy.deepcopy(X)
+                        #self.Cov = copy.deepcopy(Cov)
 
             if len(self.image_new.shape) == 3:
-                image_new = copy.deepcopy(self.image_new)
-                self.image_new = np.zeros(1)
                 if len(self.X) > 0:
-                    self.__updateMotion(image_new)
+                    image_new = copy.deepcopy(self.image_new)
+                    self.image_new = np.zeros(1)
+
+                    self.__updateMotion(image_new, prediction=self.observation_done)
+                    self.observation_done = False
+
                     self.image_old = copy.deepcopy(image_new)
+                    image_msg = self.__draw_BBox(copy.deepcopy(self.image_old), self.X)
+                    self.pub.publish(image_msg)
+
 
 
     def bbox_nn_callback(self, data):
@@ -129,26 +154,29 @@ class BBoxTracker(object):
         X[idx].ymax = x[3]
         Cov[idx] = cov
 
-    def __updateMotion(self, new_image):
-        if len(self.image_old.shape) != 3:
-            self.image_old = copy.deepcopy(new_image)
-            self.bboxes_klt = self.__bbox_msg2np(self.X)
-            self.startXs, self.startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt,
-                                                     use_shi=False)
-        else:
-            newXs, newYs = estimateAllTranslation(self.startXs, self.startYs, self.image_old, new_image)
+    def __updateMotion(self, new_image, prediction):
+        newXs, newYs = estimateAllTranslation(self.startXs, self.startYs, self.image_old, new_image)
+        if prediction:
             Xs, Ys, self.bboxes_klt, self.Cov = applyGeometricTransformation(self.startXs, self.startYs, newXs, newYs, self.bboxes_klt, self.Cov, self.R)
+        else:
+            Xs, Ys, self.bboxes_klt = applyGeometricTransformation(self.startXs, self.startYs, newXs, newYs, self.bboxes_klt)
+        # update coordinates
+        self.startXs = Xs
+        self.startYs = Ys
 
-            # update coordinates
-            self.startXs = Xs
-            self.startYs = Ys
+        # update feature points as required
+        n_features_left = np.sum(Xs != -1)
+        # print('# of Features: %d' % n_features_left)
+        if n_features_left < 15:
+            print('Generate New KLT Features')
+            self.startXs, self.startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt)
 
-            # update feature points as required
-            n_features_left = np.sum(Xs != -1)
-            # print('# of Features: %d' % n_features_left)
-            if n_features_left < 15:
-                print('Generate New KLT Features')
-                self.startXs, self.startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt)
+        for i, bbox in enumerate(self.bboxes_klt):
+            self.X[i].xmin = bbox[0][0]
+            self.X[i].ymin = bbox[0][1]
+            self.X[i].xmax = bbox[2][0]
+            self.X[i].ymax = bbox[2][1]
+        
 
 
     def __bbox_msg2np(self, X):
@@ -175,6 +203,15 @@ class BBoxTracker(object):
         iou = interArea / float(boxAArea + boxBArea - interArea)
         # return the intersection over union value
         return iou
+
+
+    def __draw_BBox(self, image, X, Image_msg=True):
+        for x in X:
+            image = cv2.rectangle(image, (int(x.xmin), int(x.ymin)), (int(x.xmax), int(x.ymax)), (0, 255, 255), 2)
+        if Image_msg:
+            image = self.bridge.cv2_to_imgmsg(image, 'rgb8')
+        return image
+
 
 
 

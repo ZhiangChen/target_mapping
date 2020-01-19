@@ -17,8 +17,7 @@ import cv2
 import copy
 from numpy.linalg import inv
 
-#  todo: 1. KLT tracker singularity: deregistration
-
+# todo: move loop to callback functions
 
 class BBoxTracker(object):
     def __init__(self):
@@ -39,8 +38,10 @@ class BBoxTracker(object):
 
         self.observation_done = False
 
-        self.Q = np.diag((.5, .5, .5, .5))  # observation model noise covariance in Euclidean coordinate system
-        self.R = np.diag((.5, .5, 0., .5, .5, 0.))  # motion model noise covariance in Homogeneous coordinate system
+        self.Q = np.diag((.2, .2, .2, .2))  # observation model noise covariance in Euclidean coordinate system
+        self.R = np.diag((10., 10., 0., 10., 10., 0.))  # motion model noise covariance in Homogeneous coordinate system
+        #self.Q = np.diag((.01, .01, .01, .001))  # observation model noise covariance in Euclidean coordinate system
+        #self.R = np.diag((.01, .01, 0., .01, .01, 0.))  # motion model noise covariance in Homogeneous coordinate system
         rospy.loginfo("bbox_tracker initialized!")
 
         while not rospy.is_shutdown():
@@ -64,21 +65,21 @@ class BBoxTracker(object):
                             if idx == -1:
                                 X.append(bbox_new)
                                 Cov.append(self.Q)
-                                self.bboxes_klt = self.__bbox_msg2np([bbox_new])
+                                self.bboxes_klt = self.__bbox_msg2np(X)
                                 startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt, use_shi=False)
                                 self.startXs = np.append(self.startXs, startXs, axis=1)
                                 self.startYs = np.append(self.startYs, startYs, axis=1)
+
 
                             else:
                                 self.__updateObservation(bbox_new, idx, X, Cov)
                                 img = copy.deepcopy(self.image_old)
                                 image_msg = self.__draw_BBox(img, X)
-                                self.pub.publish(image_msg)
+                                #self.pub.publish(image_msg)
 
-                        self.X = [copy.deepcopy(X)[-1]]
-                        self.Cov = [copy.deepcopy(Cov)[-1]]
-                        #self.X = copy.deepcopy(X)
-                        #self.Cov = copy.deepcopy(Cov)
+                        self.X = copy.deepcopy(X)
+                        self.Cov = copy.deepcopy(Cov)
+                        print("obs " + str(len(self.X)))
 
             if len(self.image_new.shape) == 3:
                 if len(self.X) > 0:
@@ -91,6 +92,8 @@ class BBoxTracker(object):
                     self.image_old = copy.deepcopy(image_new)
                     image_msg = self.__draw_BBox(copy.deepcopy(self.image_old), self.X)
                     self.pub.publish(image_msg)
+                    print("mot " + str(len(self.X)))
+
 
 
 
@@ -112,13 +115,13 @@ class BBoxTracker(object):
 
     def raw_image_callback(self, data):
         raw_image = self.bridge.imgmsg_to_cv2(data).astype(np.uint8)
-        if len(raw_image.shape)>2:
+        if len(raw_image.shape) > 2:
             self.image_new = raw_image
             #_image = self.bridge.cv2_to_imgmsg(self.image_new, 'rgb8')
             #self.pub.publish(_image)
 
 
-    def __checkRegistration(self, bbox_new, X, threshold=0.5):
+    def __checkRegistration(self, bbox_new, X, threshold=0.3):
         """
         :param bbox_new:
         :return: -1: new bbox; idx: existing bbox
@@ -129,7 +132,6 @@ class BBoxTracker(object):
             iou = self.__bbox_IoU(bbox, bbox_)
             if iou >= threshold:
                 return i
-
         return -1
 
     def __updateObservation(self, bbox_new, idx, X, Cov):
@@ -146,37 +148,66 @@ class BBoxTracker(object):
         K = cov.dot(inv(cov + self.Q))
         z = np.array((bbox_new.xmin, bbox_new.ymin, bbox_new.xmax, bbox_new.ymax)).astype(float)
         x = np.array((bbox_old.xmin, bbox_old.ymin, bbox_old.xmax, bbox_old.ymax)).astype(float)
+        #print(cov)
+        #print(inv(cov + self.Q))
+        #print(K)
+        #print(z - x)
         x = x + K.dot((z - x))
+
+        #x = z
         cov = (np.identity(4) - K).dot(cov)
         X[idx].xmin = x[0]
         X[idx].ymin = x[1]
         X[idx].xmax = x[2]
         X[idx].ymax = x[3]
         Cov[idx] = cov
+        bbox_klt = self.__bbox_msg2np([X[idx]])
+        startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), bbox_klt, use_shi=False)
+        self.startXs[:, idx] = startXs[:, 0]
+        self.startYs[:, idx] = startYs[:, 0]
+        self.bboxes_klt[idx] = bbox_klt[0]
 
     def __updateMotion(self, new_image, prediction):
         newXs, newYs = estimateAllTranslation(self.startXs, self.startYs, self.image_old, new_image)
+
         if prediction:
+            #print(1, self.Cov[0])
             Xs, Ys, self.bboxes_klt, self.Cov = applyGeometricTransformation(self.startXs, self.startYs, newXs, newYs, self.bboxes_klt, self.Cov, self.R)
+            #print(1, self.Cov[0])
         else:
             Xs, Ys, self.bboxes_klt = applyGeometricTransformation(self.startXs, self.startYs, newXs, newYs, self.bboxes_klt)
+
         # update coordinates
         self.startXs = Xs
         self.startYs = Ys
 
-        # update feature points as required
-        n_features_left = np.sum(Xs != -1)
-        # print('# of Features: %d' % n_features_left)
-        if n_features_left < 15:
-            print('Generate New KLT Features')
-            self.startXs, self.startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt)
+        # update registration
+        bboxes_klt = copy.deepcopy(self.bboxes_klt)
+        height, width, _ = self.image_old.shape
+        for i, bbox in reversed(list(enumerate(bboxes_klt))):
+            # deregistration: remove bbox out of frame
+            if (bbox.min() < 0) or (bbox[2, 0] > width) or (bbox[2, 1] > height):
+                del self.X[i]
+                del self.Cov[i]
+                self.bboxes_klt = np.delete(self.bboxes_klt, i, 0)
+                self.startXs = np.delete(self.startXs, i, 1)
+                self.startYs = np.delete(self.startYs, i, 1)
 
-        for i, bbox in enumerate(self.bboxes_klt):
-            self.X[i].xmin = bbox[0][0]
-            self.X[i].ymin = bbox[0][1]
-            self.X[i].xmax = bbox[2][0]
-            self.X[i].ymax = bbox[2][1]
-        
+            else:
+                # update bbox
+                self.X[i].xmin = bbox[0][0]
+                self.X[i].ymin = bbox[0][1]
+                self.X[i].xmax = bbox[2][0]
+                self.X[i].ymax = bbox[2][1]
+                # generate new features if needed
+                n_features_left = np.sum(self.startXs[:, i] != -1)
+                if n_features_left < 15:
+                    print('Generate New KLT Features')
+                    bbox = np.expand_dims(self.bboxes_klt[i], 0)
+                    startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), bbox)
+                    self.startXs[:, i] = startXs[:, 0]
+                    self.startYs[:, i] = startYs[:, 0]
+
 
 
     def __bbox_msg2np(self, X):

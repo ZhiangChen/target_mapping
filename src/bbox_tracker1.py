@@ -44,7 +44,55 @@ class BBoxTracker(object):
         #self.R = np.diag((.01, .01, 0., .01, .01, 0.))  # motion model noise covariance in Homogeneous coordinate system
         rospy.loginfo("bbox_tracker initialized!")
 
+        while not rospy.is_shutdown():
+            # update observation model
+            if not self.observation_done:
+                if len(self.bboxes_new) > 0:
+                    if len(self.image_new.shape) == 3:
+                        self.observation_done = True
 
+                        # clear cache
+                        bboxes_new = copy.deepcopy(self.bboxes_new)
+                        X = copy.deepcopy(self.X)
+                        Cov = copy.deepcopy(self.Cov)
+                        self.bboxes_new = []
+                        # update image
+                        self.image_old = copy.deepcopy(self.image_new)
+                        self.image_new = np.zeros(1)
+                        for i, bbox_new in enumerate(bboxes_new):
+                            # check if new bbox is existing
+                            idx = self.__checkRegistration(bbox_new, X)
+                            if idx == -1:
+                                X.append(bbox_new)
+                                Cov.append(self.Q)
+                                self.bboxes_klt = self.__bbox_msg2np(X)
+                                startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt, use_shi=False)
+                                self.startXs = np.append(self.startXs, startXs, axis=1)
+                                self.startYs = np.append(self.startYs, startYs, axis=1)
+
+
+                            else:
+                                self.__updateObservation(bbox_new, idx, X, Cov)
+                                img = copy.deepcopy(self.image_old)
+                                image_msg = self.__draw_BBox(img, X)
+                                #self.pub.publish(image_msg)
+
+                        self.X = copy.deepcopy(X)
+                        self.Cov = copy.deepcopy(Cov)
+                        print("obs " + str(len(self.X)))
+
+            if len(self.image_new.shape) == 3:
+                if len(self.X) > 0:
+                    image_new = copy.deepcopy(self.image_new)
+                    self.image_new = np.zeros(1)
+
+                    self.__updateMotion(image_new, prediction=self.observation_done)
+                    self.observation_done = False
+
+                    self.image_old = copy.deepcopy(image_new)
+                    image_msg = self.__draw_BBox(copy.deepcopy(self.image_old), self.X)
+                    self.pub.publish(image_msg)
+                    print("mot " + str(len(self.X)))
 
 
 
@@ -71,53 +119,6 @@ class BBoxTracker(object):
             self.image_new = raw_image
             #_image = self.bridge.cv2_to_imgmsg(self.image_new, 'rgb8')
             #self.pub.publish(_image)
-
-        # update observation model
-        if not self.observation_done:
-            if len(self.bboxes_new) > 0:
-                if len(self.image_new.shape) == 3:
-                    self.observation_done = True
-                    # clear cache
-                    bboxes_new = copy.deepcopy(self.bboxes_new)
-                    X = copy.deepcopy(self.X)
-                    Cov = copy.deepcopy(self.Cov)
-                    self.bboxes_new = []
-                    # update image
-                    self.image_old = copy.deepcopy(self.image_new)
-                    self.image_new = np.zeros(1)
-                    for i, bbox_new in enumerate(bboxes_new):
-                        # check if new bbox is existing
-                        idx = self.__checkRegistration(bbox_new, X)
-                        if idx == -1:
-                            X.append(bbox_new)
-                            Cov.append(self.Q)
-                            self.bboxes_klt = self.__bbox_msg2np(X)
-                            startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt, use_shi=False)
-                            self.startXs = np.append(self.startXs, startXs, axis=1)
-                            self.startYs = np.append(self.startYs, startYs, axis=1)
-
-                        else:
-                            self.__updateObservation(bbox_new, idx, X, Cov)
-                            img = copy.deepcopy(self.image_old)
-                            image_msg = self.__draw_BBox(img, X)
-                            self.pub.publish(image_msg)
-
-                    self.X = copy.deepcopy(X)
-                    self.Cov = copy.deepcopy(Cov)
-                    print("obs " + str(len(self.X)))
-
-        if len(self.image_new.shape) == 3:
-            if len(self.X) > 0:
-                image_new = copy.deepcopy(self.image_new)
-                self.image_new = np.zeros(1)
-
-                self.__updateMotion(image_new, prediction=self.observation_done)
-                self.observation_done = False
-
-                self.image_old = copy.deepcopy(image_new)
-                image_msg = self.__draw_BBox(copy.deepcopy(self.image_old), self.X)
-                self.pub.publish(image_msg)
-                print("mot " + str(len(self.X)))
 
 
     def __checkRegistration(self, bbox_new, X, threshold=0.3):

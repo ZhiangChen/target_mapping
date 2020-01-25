@@ -21,8 +21,8 @@ from numpy.linalg import inv
 
 class BBoxTracker(object):
     def __init__(self):
-        bbox_nn_sub = rospy.Subscriber('/darknet_ros/bounding_boxes', BoundingBoxes, self.bbox_nn_callback)
-        raw_image_sub = rospy.Subscriber('/r200/depth/image_raw', Image, self.raw_image_callback)
+        bbox_nn_sub = rospy.Subscriber('/darknet_ros/bounding_boxes', BoundingBoxes, self.bbox_nn_callback, queue_size=1)
+        raw_image_sub = rospy.Subscriber('/r200/depth/image_raw', Image, self.raw_image_callback, queue_size=1)
 
         self.bridge = CvBridge()
         self.pub = rospy.Publisher("/bbox_tracker/detection_image", Image, queue_size=1)  # debug
@@ -35,6 +35,7 @@ class BBoxTracker(object):
         self.image_old = np.zeros(1)
         self.startXs = np.empty((20, 0), int)
         self.startYs = np.empty((20, 0), int)
+        self.bboxes_klt = np.empty((0, 4, 2), float)
 
         self.observation_done = False
 
@@ -77,6 +78,7 @@ class BBoxTracker(object):
             if len(self.bboxes_new) > 0:
                 if len(self.image_new.shape) == 3:
                     self.observation_done = True
+                    seconds = rospy.get_time()
                     # clear cache
                     bboxes_new = copy.deepcopy(self.bboxes_new)
                     X = copy.deepcopy(self.X)
@@ -91,33 +93,38 @@ class BBoxTracker(object):
                         if idx == -1:
                             X.append(bbox_new)
                             Cov.append(self.Q)
-                            self.bboxes_klt = self.__bbox_msg2np(X)
-                            startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), self.bboxes_klt, use_shi=False)
+                            bbox_klt = self.__bbox_msg2np([bbox_new])
+                            startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), bbox_klt,
+                                                           use_shi=False)
                             self.startXs = np.append(self.startXs, startXs, axis=1)
                             self.startYs = np.append(self.startYs, startYs, axis=1)
+                            self.bboxes_klt = np.append(self.bboxes_klt, bbox_klt, axis=0)
 
                         else:
                             self.__updateObservation(bbox_new, idx, X, Cov)
-                            img = copy.deepcopy(self.image_old)
-                            image_msg = self.__draw_BBox(img, X)
-                            self.pub.publish(image_msg)
 
+                    img = copy.deepcopy(self.image_old)
+                    image_msg = self.__draw_BBox(img, X)
+                    self.pub.publish(image_msg)
+                    seconds = rospy.get_time() - seconds
                     self.X = copy.deepcopy(X)
                     self.Cov = copy.deepcopy(Cov)
-                    print("obs " + str(len(self.X)))
+                    print("obs " + str(len(self.X)) + " " + str(seconds))
 
         if len(self.image_new.shape) == 3:
             if len(self.X) > 0:
                 image_new = copy.deepcopy(self.image_new)
                 self.image_new = np.zeros(1)
 
+                seconds = rospy.get_time()
                 self.__updateMotion(image_new, prediction=self.observation_done)
+                seconds = rospy.get_time() - seconds
+                print("mot " + str(len(self.X)) + " " + str(seconds) + " " + str(self.observation_done))
                 self.observation_done = False
 
                 self.image_old = copy.deepcopy(image_new)
                 image_msg = self.__draw_BBox(copy.deepcopy(self.image_old), self.X)
                 self.pub.publish(image_msg)
-                print("mot " + str(len(self.X)))
 
 
     def __checkRegistration(self, bbox_new, X, threshold=0.3):

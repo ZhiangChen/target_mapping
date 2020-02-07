@@ -2,6 +2,7 @@
 """
 Zhiang Chen
 Jan 2020
+The tracking loop is in a callback function
 """
 
 import sys
@@ -16,8 +17,8 @@ import numpy as np
 import cv2
 import copy
 from numpy.linalg import inv
+from numpy.linalg import det
 
-# todo: move loop to callback functions
 
 class BBoxTracker(object):
     def __init__(self):
@@ -25,8 +26,9 @@ class BBoxTracker(object):
         raw_image_sub = rospy.Subscriber('/r200/depth/image_raw', Image, self.raw_image_callback, queue_size=1)
 
         self.bridge = CvBridge()
-        self.pub = rospy.Publisher("/bbox_tracker/detection_image", Image, queue_size=1)  # debug
-
+        self.pub = rospy.Publisher("/bbox_tracker/detection_image", Image, queue_size=1)
+        self.refined_bboxes_msg = BoundingBoxes()
+        self.pub1 = rospy.Publisher("/bbox_tracker/bounding_boxes", BoundingBoxes, queue_size=1)
         self.bboxes_new = []
 
         self.X = []  # a list of darknet_ros_msgs/BoundingBox
@@ -41,18 +43,11 @@ class BBoxTracker(object):
 
         self.Q = np.diag((.2, .2, .2, .2))  # observation model noise covariance in Euclidean coordinate system
         self.R = np.diag((10., 10., 0., 10., 10., 0.))  # motion model noise covariance in Homogeneous coordinate system
-        #self.Q = np.diag((.01, .01, .01, .001))  # observation model noise covariance in Euclidean coordinate system
-        #self.R = np.diag((.01, .01, 0., .01, .01, 0.))  # motion model noise covariance in Homogeneous coordinate system
         rospy.loginfo("bbox_tracker initialized!")
-
-
-
-
-
 
     def bbox_nn_callback(self, data):
         """
-        rosmsg info darknet_ros_msgs/BoundingBox
+        rosmsg info darknet_ros_msgs/BoundingBoxes
         float64 probability
         int64 xmin
         int64 ymin
@@ -65,13 +60,10 @@ class BBoxTracker(object):
         """
         self.bboxes_new = data.bounding_boxes  # bboxes is a list of darknet_ros_msgs.msg.BoundingBox
 
-
     def raw_image_callback(self, data):
         raw_image = self.bridge.imgmsg_to_cv2(data).astype(np.uint8)
         if len(raw_image.shape) > 2:
             self.image_new = raw_image
-            #_image = self.bridge.cv2_to_imgmsg(self.image_new, 'rgb8')
-            #self.pub.publish(_image)
 
         # update observation model
         if not self.observation_done:
@@ -110,14 +102,17 @@ class BBoxTracker(object):
                     self.X = copy.deepcopy(X)
                     self.Cov = copy.deepcopy(Cov)
                     print("obs " + str(len(self.X)) + " " + str(seconds))
+                    self.__publish_bbox()
 
+        # update motion model
         if len(self.image_new.shape) == 3:
             if len(self.X) > 0:
                 image_new = copy.deepcopy(self.image_new)
                 self.image_new = np.zeros(1)
 
                 seconds = rospy.get_time()
-                self.__updateMotion(image_new, prediction=self.observation_done)
+                # self.__updateMotion(image_new, prediction=self.observation_done)
+                self.__updateMotion(image_new, prediction=True)
                 seconds = rospy.get_time() - seconds
                 print("mot " + str(len(self.X)) + " " + str(seconds) + " " + str(self.observation_done))
                 self.observation_done = False
@@ -125,7 +120,7 @@ class BBoxTracker(object):
                 self.image_old = copy.deepcopy(image_new)
                 image_msg = self.__draw_BBox(copy.deepcopy(self.image_old), self.X)
                 self.pub.publish(image_msg)
-
+                self.__publish_bbox()
 
     def __checkRegistration(self, bbox_new, X, threshold=0.3):
         """
@@ -154,13 +149,7 @@ class BBoxTracker(object):
         K = cov.dot(inv(cov + self.Q))
         z = np.array((bbox_new.xmin, bbox_new.ymin, bbox_new.xmax, bbox_new.ymax)).astype(float)
         x = np.array((bbox_old.xmin, bbox_old.ymin, bbox_old.xmax, bbox_old.ymax)).astype(float)
-        #print(cov)
-        #print(inv(cov + self.Q))
-        #print(K)
-        #print(z - x)
         x = x + K.dot((z - x))
-
-        #x = z
         cov = (np.identity(4) - K).dot(cov)
         X[idx].xmin = x[0]
         X[idx].ymin = x[1]
@@ -177,9 +166,9 @@ class BBoxTracker(object):
         newXs, newYs = estimateAllTranslation(self.startXs, self.startYs, self.image_old, new_image)
 
         if prediction:
-            #print(1, self.Cov[0])
+            # print(1, self.Cov[0])
             Xs, Ys, self.bboxes_klt, self.Cov = applyGeometricTransformation(self.startXs, self.startYs, newXs, newYs, self.bboxes_klt, self.Cov, self.R)
-            #print(1, self.Cov[0])
+            # print(1, self.Cov[0])
         else:
             Xs, Ys, self.bboxes_klt = applyGeometricTransformation(self.startXs, self.startYs, newXs, newYs, self.bboxes_klt)
 
@@ -191,7 +180,17 @@ class BBoxTracker(object):
         bboxes_klt = copy.deepcopy(self.bboxes_klt)
         height, width, _ = self.image_old.shape
         for i, bbox in reversed(list(enumerate(bboxes_klt))):
-            # deregistration: remove bbox out of frame
+            # deregistration 1: measure differential entropy to remove false positive detection
+            cov = self.Cov[i]
+            DE = 5.675754132818691 + np.log(det(cov))/2.0 # differential entropy for Multivariate normal distribution
+            if DE >= 17.:
+                del self.X[i]
+                del self.Cov[i]
+                self.bboxes_klt = np.delete(self.bboxes_klt, i, 0)
+                self.startXs = np.delete(self.startXs, i, 1)
+                self.startYs = np.delete(self.startYs, i, 1)
+                continue
+            # deregistration 2: remove bbox out of frame
             if (bbox.min() < 0) or (bbox[2, 0] > width) or (bbox[2, 1] > height):
                 del self.X[i]
                 del self.Cov[i]
@@ -213,8 +212,6 @@ class BBoxTracker(object):
                     startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), bbox)
                     self.startXs[:, i] = startXs[:, 0]
                     self.startYs[:, i] = startYs[:, 0]
-
-
 
     def __bbox_msg2np(self, X):
         bboxes = np.zeros((len(X), 4, 2))
@@ -241,7 +238,6 @@ class BBoxTracker(object):
         # return the intersection over union value
         return iou
 
-
     def __draw_BBox(self, image, X, Image_msg=True):
         for x in X:
             image = cv2.rectangle(image, (int(x.xmin), int(x.ymin)), (int(x.xmax), int(x.ymax)), (0, 255, 255), 2)
@@ -249,8 +245,11 @@ class BBoxTracker(object):
             image = self.bridge.cv2_to_imgmsg(image, 'rgb8')
         return image
 
-
-
+    def __publish_bbox(self):
+        if len(self.X) != 0:
+            self.refined_bboxes_msg.header.stamp = rospy.Time.now()
+            self.refined_bboxes_msg.bounding_boxes = copy.deepcopy(self.X)
+            self.pub1.publish(self.refined_bboxes_msg)
 
 
 if __name__ == '__main__':

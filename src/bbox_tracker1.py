@@ -2,6 +2,7 @@
 """
 Zhiang Chen
 Jan 2020
+The tracking loop is in the constructor
 """
 
 import sys

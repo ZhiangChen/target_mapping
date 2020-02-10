@@ -61,6 +61,7 @@ class BBoxTracker(object):
         self.bboxes_new = data.bounding_boxes  # bboxes is a list of darknet_ros_msgs.msg.BoundingBox
 
     def raw_image_callback(self, data):
+        self.image_header = data.header
         raw_image = self.bridge.imgmsg_to_cv2(data).astype(np.uint8)
         if len(raw_image.shape) > 2:
             self.image_new = raw_image
@@ -247,7 +248,8 @@ class BBoxTracker(object):
 
     def __publish_bbox(self):
         if len(self.X) != 0:
-            self.refined_bboxes_msg.header.stamp = rospy.Time.now()
+            self.refined_bboxes_msg.header = self.image_header
+            self.refined_bboxes_msg.image_header = self.image_header
             self.refined_bboxes_msg.bounding_boxes = copy.deepcopy(self.X)
             self.pub1.publish(self.refined_bboxes_msg)
 

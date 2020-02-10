@@ -1,4 +1,4 @@
-# target_tracking
+# target_mapping
 Apache License 2.0 (c) 2020 Distributed Robotic Exploration and Mapping Systems Laboratory, ASU
 
 Zhiang Chen, Jan 2020

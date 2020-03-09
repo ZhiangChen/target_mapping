@@ -256,7 +256,7 @@ class BBoxTracker(object):
 
 if __name__ == '__main__':
     rospack = rospkg.RosPack()
-    pack_path = rospack.get_path('target_tracking')
+    pack_path = rospack.get_path('target_mapping')
     sys.path.insert(0, pack_path)
     from KLT_Feature_Tracking.getFeatures import getFeatures
     from KLT_Feature_Tracking.estimateAllTranslation import estimateAllTranslation

@@ -59,3 +59,7 @@ If we want to crop an image with a bounding box,
 (xmin, ymin, boxw, boxh) = cv2.boundingRect(bbox[0,:,:].astype(int))
 roi = img[ymin:ymin+boxh,xmin:xmin+boxw]
 ```
+
+#### 3. camera coordinate system
+![pinhole_camera_model.png](./img/pinhole_camera_model.png) 
+

@@ -27,6 +27,8 @@ from numpy.linalg import det
 class TargetTracker(object):
     def __init__(self, particle_nm=1000):
         self.nm = particle_nm
+        self.target_points = [] # a list of Nx3 ndarrays
+
         camera_info = rospy.wait_for_message("/r200/depth/camera_info", CameraInfo)
 
         self.pinhole_camera_model = PinholeCameraModel()
@@ -45,22 +47,24 @@ class TargetTracker(object):
         pose = pose_msg.pose
         bboxes = bbox_msg.bounding_boxes
         for i, bbox in enumerate(bboxes):
-            cone = self.reprojectBBoxesCone(bbox, pose)
-            if not self.checkPointsInCone(cone):
-                self.generatePoints(bbox, self.nm)
+            cone = self.reprojectBBoxesCone(bbox)
+            if not self.checkPointsInCone(cone, pose):
+                self.generatePoints(cone, self.nm)
             else:
                 self.updatePoints(bbox)
 
         variances = self.computeTargetsVariance()
         self.publish_targets()
 
-    def reprojectBBoxesCone(self, bbox, pose):
+    def reprojectBBoxesCone(self, bbox):
         x1 = bbox.xmin
         y1 = bbox.ymin
         x2 = bbox.xmax
         y2 = bbox.ymax
         #  ray1  ray2
         #  ray3  ray4
+        #  see the camera coordinate system: https://github.com/ZhiangChen/target_mapping
+        #  and also the api description: http://docs.ros.org/diamondback/api/image_geometry/html/c++/classimage__geometry_1_1PinholeCameraModel.html#ad52a4a71c6f6d375d69865e40a117ca3
         ray1 = self.pinhole_camera_model.projectPixelTo3dRay((x1, y1))
         ray2 = self.pinhole_camera_model.projectPixelTo3dRay((x2, y1))
         ray3 = self.pinhole_camera_model.projectPixelTo3dRay((x1, y2))
@@ -73,12 +77,30 @@ class TargetTracker(object):
         #print(cone)
         return cone
 
-    def checkPointsInCone(self, cone):
+    def checkPointsInCone(self, cone, pose):
         # False: no points; True: points
+        if len(self.target_points) == 0:
+            return False
+
+        ray1, ray2, ray3, ray4 = cone
+        #       norm1
+        # norm4        norm2
+        #       norm3
+        norm1 = np.cross(ray1, ray2)
+        norm2 = np.cross(ray2, ray3)
+        norm3 = np.cross(ray3, ray4)
+        norm4 = np.cross(ray4, ray1)
+        for points in self.target_points:
+            # convert points to camera coordinate system
+            pass
+
         return None
 
-    def generatePoints(self, bbox, nm):
+    def generatePoints(self, cone, pose, nm=1000):
         # register new target
+        # 1. generate points on unit surface, in camera coordinate system
+        # 2. randomize these points by varying elevations, in camera coordinate system
+        # 3. convert to world coordinate system
         pass
 
     def updatePoints(self, bbox):
@@ -91,6 +113,9 @@ class TargetTracker(object):
         return None
 
     def publish_targets(self):
+        pass
+
+    def deregisterTarget(self, id):
         pass
 
 

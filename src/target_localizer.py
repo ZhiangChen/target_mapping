@@ -42,11 +42,11 @@ class TargetTracker(object):
         print("target_localizer initialized!")
 
     def callback(self, bbox_msg, pose_msg):
+        pose = pose_msg.pose
         bboxes = bbox_msg.bounding_boxes
-        cones = self.reprojectBBoxes2Cones(bboxes)
-        cone_occupancy = self.checkPointsInCones(cones)
         for i, bbox in enumerate(bboxes):
-            if not cone_occupancy[i]:
+            cone = self.reprojectBBoxesCone(bbox, pose)
+            if not self.checkPointsInCone(cone):
                 self.generatePoints(bbox, self.nm)
             else:
                 self.updatePoints(bbox)
@@ -54,12 +54,28 @@ class TargetTracker(object):
         variances = self.computeTargetsVariance()
         self.publish_targets()
 
-    def reprojectBBoxes2Cones(self, bboxes):
-        pass
+    def reprojectBBoxesCone(self, bbox, pose):
+        x1 = bbox.xmin
+        y1 = bbox.ymin
+        x2 = bbox.xmax
+        y2 = bbox.ymax
+        #  ray1  ray2
+        #  ray3  ray4
+        ray1 = self.pinhole_camera_model.projectPixelTo3dRay((x1, y1))
+        ray2 = self.pinhole_camera_model.projectPixelTo3dRay((x2, y1))
+        ray3 = self.pinhole_camera_model.projectPixelTo3dRay((x1, y2))
+        ray4 = self.pinhole_camera_model.projectPixelTo3dRay((x2, y2))
+        ray1 = np.asarray(ray1)/ray1[2]
+        ray2 = np.asarray(ray2)/ray2[2]
+        ray3 = np.asarray(ray3)/ray3[2]
+        ray4 = np.asarray(ray4)/ray4[2]
+        cone = np.asarray((ray1, ray2, ray3, ray4))
+        #print(cone)
+        return cone
 
-    def checkPointsInCones(self, cones):
+    def checkPointsInCone(self, cone):
         # False: no points; True: points
-        pass
+        return None
 
     def generatePoints(self, bbox, nm):
         # register new target
@@ -72,7 +88,7 @@ class TargetTracker(object):
 
 
     def computeTargetsVariance(self):
-        pass
+        return None
 
     def publish_targets(self):
         pass

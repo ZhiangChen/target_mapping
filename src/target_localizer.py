@@ -23,6 +23,10 @@ import copy
 from numpy.linalg import inv
 from numpy.linalg import det
 import tf
+import sensor_msgs.point_cloud2 as pcl2
+from sensor_msgs.msg import PointCloud2
+import std_msgs.msg
+
 
 ROS_BAG = True
 
@@ -51,6 +55,8 @@ class TargetTracker(object):
 
         self.T_camera2base = np.matmul(trans, rot)
 
+        self.pcl_pub = rospy.Publisher("/target_localizer/points", PointCloud2, queue_size=10)
+
         camera_info = rospy.wait_for_message("/r200/depth/camera_info", CameraInfo)
 
         self.pinhole_camera_model = PinholeCameraModel()
@@ -70,14 +76,14 @@ class TargetTracker(object):
         bboxes = bbox_msg.bounding_boxes
         for i, bbox in enumerate(bboxes):
             cone = self.reprojectBBoxesCone(bbox)
-            id = self.checkPointsInCone(cone, pose)
-            if not id:
-                self.generatePoints(cone, self.nm)
+            ids = self.checkPointsInCone(cone, pose)
+            if not ids:
+                self.generatePoints(cone, pose, self.nm)
             else:
-                self.updatePoints(id, bbox)
+                self.updatePoints(ids, bbox)
 
         variances = self.computeTargetsVariance()
-        self.publish_targets()
+        self.publishTargetPoints()
 
     def reprojectBBoxesCone(self, bbox):
         """
@@ -119,6 +125,7 @@ class TargetTracker(object):
         norm3 = np.cross(ray3, ray4)
         norm4 = np.cross(ray4, ray1)
         H = np.asarray((norm1, norm2, norm3, norm4))
+        ids = []
         for i,points in enumerate(self.target_points):
             # convert points to camera coordinate system
             T_base2world = self.getTransformFromPose(pose)
@@ -128,9 +135,10 @@ class TargetTracker(object):
             points_c = np.matmul(T_world2camera, points_w)
             points_c = points_c[:3, :]
             if np.any(np.matmul(H, points_c) >= 0):
-                return i
+                ids.append(i)
             else:
                 return False
+        return ids
 
 
     def generatePoints(self, cone, pose, nm=1000):
@@ -152,12 +160,11 @@ class TargetTracker(object):
         T_camera2world = np.matmul(T_base2world, self.T_camera2base)
         points_w = np.matmul(T_camera2world, points_c) # 4 x nm
         points_w = points_w[:3, :].transpose() # nm x 3
-
         self.target_points.append(points_w)
 
 
 
-    def updatePoints(self, bbox):
+    def updatePoints(self, ids, bbox):
         # return information gain
         # if there are multiple targets in the bbox, then update them all individually
         pass
@@ -166,8 +173,6 @@ class TargetTracker(object):
     def computeTargetsVariance(self):
         return None
 
-    def publish_targets(self):
-        pass
 
     def deregisterTarget(self, id):
         pass
@@ -178,6 +183,19 @@ class TargetTracker(object):
         rot = tf.transformations.quaternion_matrix((pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w))
         T = np.matmul(trans, rot)
         return T
+
+    def publishTargetPoints(self):
+        # convert target_points to pointcloud messages
+        for points in self.target_points:
+            pc = points.tolist()
+            header = std_msgs.msg.Header()
+            header.stamp = rospy.Time.now()
+            header.frame_id = 'map'
+            # create pcl from points
+            pc_msg = pcl2.create_cloud_xyz32(header, pc)
+            self.pcl_pub.publish(pc_msg)
+
+
 
 if __name__ == '__main__':
     rospy.init_node('target_localizer', anonymous=False)

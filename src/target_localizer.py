@@ -66,7 +66,7 @@ class TargetTracker(object):
         self.sub_pose = message_filters.Subscriber('/mavros/local_position/pose', PoseStamped)
         # self.sub_vel = message_filters.Subscriber('/mavros/local_position/velocity_local', TwistStamped)
 
-        self.ts = message_filters.ApproximateTimeSynchronizer([self.sub_bbox, self.sub_pose], queue_size=10, slop=0.1)
+        self.ts = message_filters.ApproximateTimeSynchronizer([self.sub_bbox, self.sub_pose], queue_size=100, slop=0.1)
         # self.ts = message_filters.TimeSynchronizer([self.sub_bbox, self.sub_pose, self.sub_vel], 10)
         self.ts.registerCallback(self.callback)
         print("target_localizer initialized!")
@@ -81,6 +81,8 @@ class TargetTracker(object):
                 self.generatePoints(cone, pose, self.nm)
             else:
                 self.updatePoints(ids, bbox)
+
+        print(len(self.target_points))
 
         variances = self.computeTargetsVariance()
         self.publishTargetPoints()
@@ -100,8 +102,8 @@ class TargetTracker(object):
         #  and also the api description: http://docs.ros.org/diamondback/api/image_geometry/html/c++/classimage__geometry_1_1PinholeCameraModel.html#ad52a4a71c6f6d375d69865e40a117ca3
         ray1 = self.pinhole_camera_model.projectPixelTo3dRay((x1, y1))
         ray2 = self.pinhole_camera_model.projectPixelTo3dRay((x2, y1))
-        ray3 = self.pinhole_camera_model.projectPixelTo3dRay((x1, y2))
-        ray4 = self.pinhole_camera_model.projectPixelTo3dRay((x2, y2))
+        ray3 = self.pinhole_camera_model.projectPixelTo3dRay((x2, y2))
+        ray4 = self.pinhole_camera_model.projectPixelTo3dRay((x1, y2))
         ray1 = np.asarray(ray1)/ray1[2]
         ray2 = np.asarray(ray2)/ray2[2]
         ray3 = np.asarray(ray3)/ray3[2]
@@ -125,6 +127,7 @@ class TargetTracker(object):
         norm3 = np.cross(ray3, ray4)
         norm4 = np.cross(ray4, ray1)
         H = np.asarray((norm1, norm2, norm3, norm4))
+
         ids = []
         for i,points in enumerate(self.target_points):
             # convert points to camera coordinate system
@@ -134,12 +137,13 @@ class TargetTracker(object):
             points_w = np.insert(points, 3, 1, axis=1).transpose()
             points_c = np.matmul(T_world2camera, points_w)
             points_c = points_c[:3, :]
-            if np.any(np.matmul(H, points_c) >= 0):
+            points_occupancy = np.all(np.matmul(H, points_c) >= 0, axis=0)
+            if np.any(points_occupancy):
                 ids.append(i)
-            else:
-                return False
-        return ids
-
+        if len(ids) >= 1:
+            return ids
+        else:
+            return False
 
     def generatePoints(self, cone, pose, nm=1000):
         # register new target
@@ -186,14 +190,16 @@ class TargetTracker(object):
 
     def publishTargetPoints(self):
         # convert target_points to pointcloud messages
+        all_points = []
         for points in self.target_points:
-            pc = points.tolist()
-            header = std_msgs.msg.Header()
-            header.stamp = rospy.Time.now()
-            header.frame_id = 'map'
-            # create pcl from points
-            pc_msg = pcl2.create_cloud_xyz32(header, pc)
-            self.pcl_pub.publish(pc_msg)
+            all_points = all_points + points.tolist()
+            
+        header = std_msgs.msg.Header()
+        header.stamp = rospy.Time.now()
+        header.frame_id = 'map'
+        # create pcl from points
+        pc_msg = pcl2.create_cloud_xyz32(header, all_points)
+        self.pcl_pub.publish(pc_msg)
 
 
 

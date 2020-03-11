@@ -27,9 +27,11 @@ import tf
 ROS_BAG = True
 
 class TargetTracker(object):
-    def __init__(self, particle_nm=1000):
+    def __init__(self, particle_nm=1000, z_range=(1, 10)):
         self.nm = particle_nm
-        self.target_points = [np.asarray(((10,-1,0), (-1,-1,0)))] # a list of Nx3 ndarrays
+        self.target_points = [] # a list of Nx3 ndarrays
+        self.z_min = z_range[0] # the range of particles along z axis in camera coord system
+        self.z_max = z_range[1]
 
         if not ROS_BAG:
             rospy.loginfo("checking tf from camera to base_link ...")
@@ -68,15 +70,20 @@ class TargetTracker(object):
         bboxes = bbox_msg.bounding_boxes
         for i, bbox in enumerate(bboxes):
             cone = self.reprojectBBoxesCone(bbox)
-            if not self.checkPointsInCone(cone, pose):
+            id = self.checkPointsInCone(cone, pose)
+            if not id:
                 self.generatePoints(cone, self.nm)
             else:
-                self.updatePoints(bbox)
+                self.updatePoints(id, bbox)
 
         variances = self.computeTargetsVariance()
         self.publish_targets()
 
     def reprojectBBoxesCone(self, bbox):
+        """
+        :param bbox:
+        :return: cone = np.asarray((ray1, ray2, ray3, ray4))
+        """
         x1 = bbox.xmin
         y1 = bbox.ymin
         x2 = bbox.xmax
@@ -128,10 +135,27 @@ class TargetTracker(object):
 
     def generatePoints(self, cone, pose, nm=1000):
         # register new target
+        # cone = np.asarray((ray1, ray2, ray3, ray4))
         # 1. generate points on unit surface, in camera coordinate system
         # 2. randomize these points by varying elevations, in camera coordinate system
         # 3. convert to world coordinate system
-        pass
+        a = np.random.rand(4, nm)  # 4 x nm
+        scaling = np.diag(1.0 / np.sum(a, axis=0)) # nm x nm
+        a_ = np.matmul(a, scaling) # 4 x nm
+        points = np.matmul(cone.transpose(), a_) # 3 x nm
+        z = np.random.rand(nm) * (self.z_max - self.z_min) + self.z_min
+        z = np.diag(z) # nm x nm
+        points_c = np.matmul(points, z) # 3 x nm
+        points_c = np.insert(points_c, 3, 1, axis=0) # 4 x nm
+
+        T_base2world = self.getTransformFromPose(pose)
+        T_camera2world = np.matmul(T_base2world, self.T_camera2base)
+        points_w = np.matmul(T_camera2world, points_c) # 4 x nm
+        points_w = points_w[:3, :].transpose() # nm x 3
+
+        self.target_points.append(points_w)
+
+
 
     def updatePoints(self, bbox):
         # return information gain

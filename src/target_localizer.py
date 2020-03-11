@@ -22,12 +22,32 @@ import cv2
 import copy
 from numpy.linalg import inv
 from numpy.linalg import det
+import tf
 
+ROS_BAG = True
 
 class TargetTracker(object):
     def __init__(self, particle_nm=1000):
         self.nm = particle_nm
-        self.target_points = [] # a list of Nx3 ndarrays
+        self.target_points = [np.asarray(((10,-1,0), (-1,-1,0)))] # a list of Nx3 ndarrays
+
+        if not ROS_BAG:
+            rospy.loginfo("checking tf from camera to base_link ...")
+            listener = tf.TransformListener()
+            while not rospy.is_shutdown():
+                try:
+                    now = rospy.Time.now()
+                    listener.waitForTransform("base_link", "r200", now, rospy.Duration(4.0))
+                    (trans, rot) = listener.lookupTransform("base_link", "r200", now)
+                except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+                    continue
+        else:
+            trans_vec = (0.1, 0,  - 0.01)
+            trans = tf.transformations.translation_matrix(trans_vec)
+            quaternion = (-0.6743797, 0.6743797, - 0.2126311, 0.2126311)
+            rot = tf.transformations.quaternion_matrix(quaternion)
+
+        self.T_camera2base = np.matmul(trans, rot)
 
         camera_info = rospy.wait_for_message("/r200/depth/camera_info", CameraInfo)
 
@@ -86,15 +106,25 @@ class TargetTracker(object):
         #       norm1
         # norm4        norm2
         #       norm3
+        # the order of cross product determines the normal vector direction
         norm1 = np.cross(ray1, ray2)
         norm2 = np.cross(ray2, ray3)
         norm3 = np.cross(ray3, ray4)
         norm4 = np.cross(ray4, ray1)
-        for points in self.target_points:
+        H = np.asarray((norm1, norm2, norm3, norm4))
+        for i,points in enumerate(self.target_points):
             # convert points to camera coordinate system
-            pass
+            T_base2world = self.getTransformFromPose(pose)
+            T_camera2world = np.matmul(T_base2world, self.T_camera2base)
+            T_world2camera = inv(T_camera2world)
+            points_w = np.insert(points, 3, 1, axis=1).transpose()
+            points_c = np.matmul(T_world2camera, points_w)
+            points_c = points_c[:3, :]
+            if np.any(np.matmul(H, points_c) >= 0):
+                return i
+            else:
+                return False
 
-        return None
 
     def generatePoints(self, cone, pose, nm=1000):
         # register new target
@@ -118,6 +148,12 @@ class TargetTracker(object):
     def deregisterTarget(self, id):
         pass
 
+
+    def getTransformFromPose(self, pose):
+        trans = tf.transformations.translation_matrix((pose.position.x, pose.position.y, pose.position.z))
+        rot = tf.transformations.quaternion_matrix((pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w))
+        T = np.matmul(trans, rot)
+        return T
 
 if __name__ == '__main__':
     rospy.init_node('target_localizer', anonymous=False)

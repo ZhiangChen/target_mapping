@@ -62,6 +62,8 @@ class TargetTracker(object):
         self.pinhole_camera_model = PinholeCameraModel()
         self.pinhole_camera_model.fromCameraInfo(camera_info)
 
+        self.image_W, self.image_H = self.pinhole_camera_model.fullResolution()
+
         self.sub_bbox = message_filters.Subscriber('/bbox_tracker/bounding_boxes', BoundingBoxes)
         self.sub_pose = message_filters.Subscriber('/mavros/local_position/pose', PoseStamped)
         # self.sub_vel = message_filters.Subscriber('/mavros/local_position/velocity_local', TwistStamped)
@@ -74,18 +76,39 @@ class TargetTracker(object):
     def callback(self, bbox_msg, pose_msg):
         pose = pose_msg.pose
         bboxes = bbox_msg.bounding_boxes
+
+
         for i, bbox in enumerate(bboxes):
-            cone = self.reprojectBBoxesCone(bbox)
-            ids = self.checkPointsInCone(cone, pose)
-            if not ids:
-                self.generatePoints(cone, pose, self.nm)
-            else:
-                self.updatePoints(ids, bbox)
+            print(bbox)
+            if not self.checkBBoxOnEdge(bbox):
+                cone = self.reprojectBBoxesCone(bbox)
+                ids = self.checkPointsInCone(cone, pose)
+                if not ids:
+                    self.generatePoints(cone, pose, self.nm)
+                else:
+                    self.updatePoints(ids, bbox)
 
         print(len(self.target_points))
 
         variances = self.computeTargetsVariance()
         self.publishTargetPoints()
+
+    def checkBBoxOnEdge(self, bbox, p=20):
+        x1 = bbox.xmin
+        y1 = bbox.ymin
+        x2 = bbox.xmax
+        y2 = bbox.ymax
+        if x1 < p:
+            return True # it is on the edge
+        if y1 < p:
+            return True
+        if (self.image_W - x2) < p:
+            return True
+        if (self.image_H - y2) < p:
+            return True
+
+        return False
+
 
     def reprojectBBoxesCone(self, bbox):
         """

@@ -26,14 +26,16 @@ import tf
 import sensor_msgs.point_cloud2 as pcl2
 from sensor_msgs.msg import PointCloud2
 import std_msgs.msg
+import scipy.stats as stats
 
 
 ROS_BAG = True
 
 class TargetTracker(object):
-    def __init__(self, particle_nm=1000, z_range=(1, 10)):
+    def __init__(self, particle_nm=1000, z_range=(1, 10), a=0.5):
         self.nm = particle_nm
-        self.target_points = [] # a list of Nx3 ndarrays
+        self.a = a # https://github.com/ZhiangChen/target_mapping/wiki/Target-Localization-and-Body-Estimation-by-3D-Points
+        self.target_points = [] # a list of Nx3 ndarrays, in world coord system
         self.z_min = z_range[0] # the range of particles along z axis in camera coord system
         self.z_max = z_range[1]
 
@@ -79,14 +81,13 @@ class TargetTracker(object):
 
 
         for i, bbox in enumerate(bboxes):
-            print(bbox)
             if not self.checkBBoxOnEdge(bbox):
                 cone = self.reprojectBBoxesCone(bbox)
                 ids = self.checkPointsInCone(cone, pose)
                 if not ids:
                     self.generatePoints(cone, pose, self.nm)
                 else:
-                    self.updatePoints(ids, bbox)
+                    self.updatePoints(ids, cone, pose)
 
         print(len(self.target_points))
 
@@ -108,7 +109,6 @@ class TargetTracker(object):
             return True
 
         return False
-
 
     def reprojectBBoxesCone(self, bbox):
         """
@@ -189,12 +189,48 @@ class TargetTracker(object):
         points_w = points_w[:3, :].transpose() # nm x 3
         self.target_points.append(points_w)
 
-
-
-    def updatePoints(self, ids, bbox):
+    def updatePoints(self, ids, cone, pose):
         # return information gain
         # if there are multiple targets in the bbox, then update them all individually
-        pass
+        ray1, ray2, ray3, ray4 = cone
+        norm1 = np.cross(ray1, ray2)
+        norm2 = np.cross(ray2, ray3)
+        norm3 = np.cross(ray3, ray4)
+        norm4 = np.cross(ray4, ray1)
+        H = np.asarray((norm1, norm2, norm3, norm4))
+        T_base2world = self.getTransformFromPose(pose)
+        T_camera2world = np.matmul(T_base2world, self.T_camera2base)
+        T_world2camera = inv(T_camera2world)
+
+        for id in ids:
+            # add Gaussian noise to all points
+            points = self.target_points[id]
+            w = np.random.normal(size=(1000, 3)) * 0.01
+            points = points + w
+            # convert to camera coord sys
+            points_w = np.insert(points, 3, 1, axis=1).transpose()
+            points_c = np.matmul(T_world2camera, points_w)
+            points_c = points_c[:3, :]
+            # update points
+            HX = np.matmul(H, points_c)
+            points_occupancy = np.all( HX>= 0, axis=0)
+            Z = points_c[:, points_occupancy] # points in bbox
+            Y = points_c[:, np.invert(points_occupancy)] # points not in bbox
+            D = np.matmul(H, Z).min(axis=0)
+            sigma = self.a * float(self.nm - Z.shape[1])/self.nm
+            W = stats.norm(0, sigma).pdf(D)
+            print(sigma) # debug: make sure sigma is converging
+            W = W/np.sum(W) # normalize W
+            acc_W = np.cumsum(W) # accumulated W
+            u_samples = np.random.rand(Y.shape[1]) # uniform samples
+            resample_ids = np.searchsorted(acc_W, u_samples)
+            Y_ = np.take(Z, resample_ids, axis=1)
+            new_points_c = np.concatenate((Z, Y_), axis=1)
+            # convert to world coord sys
+            new_points_c = np.insert(new_points_c, 3, 1, axis=0)
+            new_points_w = np.matmul(T_camera2world, new_points_c)[:3, :].transpose()
+
+            self.target_points[id] = new_points_w
 
 
     def computeTargetsVariance(self):

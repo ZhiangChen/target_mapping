@@ -35,6 +35,7 @@ class TargetTracker(object):
     def __init__(self, particle_nm=1000, z_range=(1, 10), a=0.5):
         self.nm = particle_nm
         self.a = a # https://github.com/ZhiangChen/target_mapping/wiki/Target-Localization-and-Body-Estimation-by-3D-Points
+        self.w = []
         self.target_points = [] # a list of Nx3 ndarrays, in world coord system
         self.z_min = z_range[0] # the range of particles along z axis in camera coord system
         self.z_max = z_range[1]
@@ -188,6 +189,7 @@ class TargetTracker(object):
         points_w = np.matmul(T_camera2world, points_c) # 4 x nm
         points_w = points_w[:3, :].transpose() # nm x 3
         self.target_points.append(points_w)
+        self.w.append(1)
 
     def updatePoints(self, ids, cone, pose):
         # return information gain
@@ -205,7 +207,8 @@ class TargetTracker(object):
         for id in ids:
             # add Gaussian noise to all points
             points = self.target_points[id]
-            w = np.random.normal(size=(1000, 3)) * 0.01
+            w = np.random.normal(size=(1000, 3)) * self.w[id]
+            self.w[id] = self.w[id]*0.9 + 0.001
             points = points + w
             # convert to camera coord sys
             points_w = np.insert(points, 3, 1, axis=1).transpose()
@@ -218,6 +221,7 @@ class TargetTracker(object):
             Y = points_c[:, np.invert(points_occupancy)] # points not in bbox
             D = np.matmul(H, Z).min(axis=0)
             sigma = self.a * float(self.nm - Z.shape[1])/self.nm
+            sigma = np.max((sigma, 0.2))
             W = stats.norm(0, sigma).pdf(D)
             print(sigma) # debug: make sure sigma is converging
             W = W/np.sum(W) # normalize W

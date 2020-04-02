@@ -40,6 +40,13 @@ class TargetTracker(object):
         self.z_min = z_range[0] # the range of particles along z axis in camera coord system
         self.z_max = z_range[1]
 
+        self.publish_image = True
+        if self.publish_image:
+            self.bridge = CvBridge()
+            self.pub = rospy.Publisher("/target_localizer/detection_image", Image, queue_size=1)
+            raw_image_sub = rospy.Subscriber('/bbox_tracker/detection_image', Image, self.image_callback, queue_size=1)
+            self.img = np.zeros(1)
+
         if not ROS_BAG:
             rospy.loginfo("checking tf from camera to base_link ...")
             listener = tf.TransformListener()
@@ -88,9 +95,10 @@ class TargetTracker(object):
                 if not ids:
                     self.generatePoints(cone, pose, self.nm)
                 else:
-                    self.updatePoints(ids, cone, pose)
+                    #self.updatePoints(ids, cone, pose)
+                    self.updatePointsDF(ids, bbox, pose)
 
-        print(len(self.target_points))
+        print("target #: %d" % len(self.target_points))
 
         variances = self.computeTargetsVariance()
         self.publishTargetPoints()
@@ -236,6 +244,61 @@ class TargetTracker(object):
 
             self.target_points[id] = new_points_w
 
+    def updatePointsDF(self, ids, bbox, pose, epsilon=0.2):
+        # update points using depth filter
+        T_base2world = self.getTransformFromPose(pose)
+        T_camera2world = np.matmul(T_base2world, self.T_camera2base)
+        T_world2camera = inv(T_camera2world)
+
+        for id in ids:
+            points = self.target_points[id]
+            #w = np.random.normal(size=(self.nm, 3)) * self.w[id]
+            #self.w[id] = self.w[id] * 0.9 + 0.001
+            w = np.random.normal(size=(self.nm, 2)) * 0.3
+            points[:, :2] = points[:, :2] + w
+            points_w = np.insert(points, 3, 1, axis=1).transpose()
+            points_c = np.matmul(T_world2camera, points_w)
+            points_c = points_c[:3, :]
+            points_c = points_c.transpose()
+            x = map(self.pinhole_camera_model.project3dToPixel, points_c)
+            x = np.asarray(x)
+            u = np.all(np.asarray((bbox.xmin <= x[:, 0], x[:, 0] <= bbox.xmax)), axis=0)
+            v = np.all(np.asarray((bbox.ymin <= x[:, 1], x[:, 1] <= bbox.ymax)), axis=0)
+            x_inbbox_bool = np.all(np.asarray((u, v)), axis=0)
+            bbox_size = (bbox.xmax - bbox.xmin) * (bbox.ymax - bbox.ymin)
+            uniform_imp = x_inbbox_bool / bbox_size  # importance from uniform distribution
+            if self.publish_image:
+                if self.img.shape[0] == self.image_H:
+                    x_inbbox = x[x_inbbox_bool]
+                    image = self.draw_points(copy.deepcopy(self.img), x_inbbox)
+                    image_msg = self.bridge.cv2_to_imgmsg(image, 'rgb8')
+                    self.pub.publish(image_msg)
+
+            mean = ((bbox.xmin + bbox.xmax)/2.0, (bbox.ymin + bbox.ymax)/2.0)
+            cov = ((((bbox.xmax - bbox.xmin)/2.0)**2, 0), (0, ((bbox.ymax - bbox.ymin)/2.0)**2))
+            normal_2d = stats.multivariate_normal(mean, cov)
+            normal_imp = normal_2d.pdf(x)  # importance from normal distribution
+            imp = (1 - epsilon) * normal_imp + epsilon * uniform_imp
+            W = imp / np.sum(imp)  # normalize importance
+            # resampling
+            acc_W = np.cumsum(W)  # accumulated W
+            u_samples = np.random.rand(x.shape[0])  # uniform samples
+            resample_ids = np.searchsorted(acc_W, u_samples)
+            new_points = np.take(points, resample_ids, axis=0)
+
+            self.target_points[id] = new_points
+
+
+    def image_callback(self, data):
+        self.image_header = data.header
+        raw_image = self.bridge.imgmsg_to_cv2(data).astype(np.uint8)
+        if len(raw_image.shape) > 2:
+            self.img = raw_image
+
+    def draw_points(self, image, pts):
+        for pt in pts:
+            image = cv2.circle(image, (int(pt[0]), int(pt[1])), radius=2, color=(0, 0, 255), thickness=2)
+        return image
 
     def computeTargetsVariance(self):
         return None

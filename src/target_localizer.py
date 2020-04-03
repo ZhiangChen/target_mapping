@@ -27,18 +27,26 @@ import sensor_msgs.point_cloud2 as pcl2
 from sensor_msgs.msg import PointCloud2
 import std_msgs.msg
 import scipy.stats as stats
+from visualization_msgs.msg import Marker, MarkerArray
+import visualization_msgs
+from geometry_msgs.msg import Point
+import PyKDL
+
 
 
 ROS_BAG = True
 
 class TargetTracker(object):
-    def __init__(self, particle_nm=1000, z_range=(1, 10), a=0.5):
+    def __init__(self, particle_nm=1000, z_range=(0.2, 4), a=0.5):
         self.nm = particle_nm
         self.a = a # https://github.com/ZhiangChen/target_mapping/wiki/Target-Localization-and-Body-Estimation-by-3D-Points
         self.w = []
         self.target_points = [] # a list of Nx3 ndarrays, in world coord system
         self.z_min = z_range[0] # the range of particles along z axis in camera coord system
         self.z_max = z_range[1]
+
+        self.pub_markers = rospy.Publisher("/target_localizer/ellipsoids", MarkerArray, queue_size=1)
+
 
         self.publish_image = True
         if self.publish_image:
@@ -124,10 +132,10 @@ class TargetTracker(object):
         :param bbox:
         :return: cone = np.asarray((ray1, ray2, ray3, ray4))
         """
-        x1 = bbox.xmin
-        y1 = bbox.ymin
-        x2 = bbox.xmax
-        y2 = bbox.ymax
+        x1 = bbox.xmin - 10
+        y1 = bbox.ymin - 10
+        x2 = bbox.xmax + 10
+        y2 = bbox.ymax + 10
         #  ray1  ray2
         #  ray3  ray4
         #  see the camera coordinate system: https://github.com/ZhiangChen/target_mapping
@@ -185,17 +193,17 @@ class TargetTracker(object):
         # 3. convert to world coordinate system
         a = np.random.rand(4, nm)  # 4 x nm
         scaling = np.diag(1.0 / np.sum(a, axis=0)) # nm x nm
-        a_ = np.matmul(a, scaling) # 4 x nm
-        points = np.matmul(cone.transpose(), a_) # 3 x nm
+        a_ = np.matmul(a, scaling)  # 4 x nm
+        points = np.matmul(cone.transpose(), a_)  # 3 x nm
         z = np.random.rand(nm) * (self.z_max - self.z_min) + self.z_min
-        z = np.diag(z) # nm x nm
-        points_c = np.matmul(points, z) # 3 x nm
+        z = np.diag(z)  # nm x nm
+        points_c = np.matmul(points, z)  # 3 x nm
         points_c = np.insert(points_c, 3, 1, axis=0) # 4 x nm
 
         T_base2world = self.getTransformFromPose(pose)
         T_camera2world = np.matmul(T_base2world, self.T_camera2base)
-        points_w = np.matmul(T_camera2world, points_c) # 4 x nm
-        points_w = points_w[:3, :].transpose() # nm x 3
+        points_w = np.matmul(T_camera2world, points_c)  # 4 x nm
+        points_w = points_w[:3, :].transpose()  # nm x 3
         self.target_points.append(points_w)
         self.w.append(1)
 
@@ -224,7 +232,7 @@ class TargetTracker(object):
             points_c = points_c[:3, :]
             # update points
             HX = np.matmul(H, points_c)
-            points_occupancy = np.all( HX>= 0, axis=0)
+            points_occupancy = np.all(HX >= 0, axis=0)
             Z = points_c[:, points_occupancy] # points in bbox
             Y = points_c[:, np.invert(points_occupancy)] # points not in bbox
             D = np.matmul(H, Z).min(axis=0)
@@ -244,7 +252,7 @@ class TargetTracker(object):
 
             self.target_points[id] = new_points_w
 
-    def updatePointsDF(self, ids, bbox, pose, epsilon=0.2):
+    def updatePointsDF(self, ids, bbox, pose, epsilon=0.):
         # update points using depth filter
         T_base2world = self.getTransformFromPose(pose)
         T_camera2world = np.matmul(T_base2world, self.T_camera2base)
@@ -254,16 +262,22 @@ class TargetTracker(object):
             points = self.target_points[id]
             #w = np.random.normal(size=(self.nm, 3)) * self.w[id]
             #self.w[id] = self.w[id] * 0.9 + 0.001
-            w = np.random.normal(size=(self.nm, 2)) * 0.3
+            w = np.random.normal(size=(self.nm, 2)) * 0.05
             points[:, :2] = points[:, :2] + w
+            w = np.random.normal(size=self.nm) * 0.02
+            points[:, 2] = points[:, 2] + w
             points_w = np.insert(points, 3, 1, axis=1).transpose()
             points_c = np.matmul(T_world2camera, points_w)
             points_c = points_c[:3, :]
             points_c = points_c.transpose()
             x = map(self.pinhole_camera_model.project3dToPixel, points_c)
             x = np.asarray(x)
-            u = np.all(np.asarray((bbox.xmin <= x[:, 0], x[:, 0] <= bbox.xmax)), axis=0)
-            v = np.all(np.asarray((bbox.ymin <= x[:, 1], x[:, 1] <= bbox.ymax)), axis=0)
+            xmin = bbox.xmin - 10
+            xmax = bbox.xmax + 10
+            ymin = bbox.ymin - 10
+            ymax = bbox.ymax + 10
+            u = np.all(np.asarray((xmin <= x[:, 0], x[:, 0] <= xmax)), axis=0)
+            v = np.all(np.asarray((ymin <= x[:, 1], x[:, 1] <= ymax)), axis=0)
             x_inbbox_bool = np.all(np.asarray((u, v)), axis=0)
             bbox_size = (bbox.xmax - bbox.xmin) * (bbox.ymax - bbox.ymin)
             uniform_imp = x_inbbox_bool / bbox_size  # importance from uniform distribution
@@ -301,7 +315,57 @@ class TargetTracker(object):
         return image
 
     def computeTargetsVariance(self):
-        return None
+        markerArray = MarkerArray()
+        for id, pts in enumerate(self.target_points):
+            center = np.mean(pts, axis=0)
+            w, v = np.linalg.eig(np.cov(pts.transpose()))
+            #eigx_n = PyKDL.Vector(v[0, 0], v[0, 1], v[0, 2])
+            #eigy_n = -PyKDL.Vector(v[1, 0], v[1, 1], v[1, 2])
+            #eigz_n = PyKDL.Vector(v[2, 0], v[2, 1], v[2, 2])
+            eigx_n = PyKDL.Vector(v[0, 0], v[1, 0], v[2, 0])
+            eigy_n = -PyKDL.Vector(v[0, 1], v[1, 1], v[2, 1])
+            eigz_n = PyKDL.Vector(v[0, 2], v[1, 2], v[2, 2])
+            eigx_n.Normalize()
+            eigy_n.Normalize()
+            eigz_n.Normalize()
+            rot = PyKDL.Rotation(eigx_n, eigy_n, eigz_n)
+            quat = rot.GetQuaternion()
+            marker = self.markerVector(id*3, w*10, v, center, quat)
+            markerArray.markers.append(marker)
+
+        if len(self.target_points) > 0:
+            self.pub_markers.publish(markerArray)
+
+
+
+    def markerVector(self, id, scale, rotation, position, quaternion):
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "target_mapping"
+        marker.id = id
+        marker.type = visualization_msgs.msg.Marker.SPHERE
+        marker.action = visualization_msgs.msg.Marker.ADD
+        marker.scale.x = scale[0]
+        marker.scale.y = scale[1]
+        marker.scale.z = scale[2]
+        marker.color.a = 1.0
+        marker.color.r = 1
+        marker.color.g = 0
+        marker.color.b = 0
+
+        marker.pose.position.x = position[0]
+        marker.pose.position.y = position[1]
+        marker.pose.position.z = position[2]
+        R = np.eye(4)
+        R[:3, :3] = rotation
+        q = tf.transformations.quaternion_from_matrix(R)
+
+        marker.pose.orientation.x = quaternion[0]
+        marker.pose.orientation.y = quaternion[1]
+        marker.pose.orientation.z = quaternion[2]
+        marker.pose.orientation.w = quaternion[3]
+        return marker
 
 
     def deregisterTarget(self, id):

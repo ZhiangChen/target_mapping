@@ -95,7 +95,6 @@ class TargetTracker(object):
         pose = pose_msg.pose
         bboxes = bbox_msg.bounding_boxes
 
-
         for i, bbox in enumerate(bboxes):
             if not self.checkBBoxOnEdge(bbox):
                 cone = self.reprojectBBoxesCone(bbox)

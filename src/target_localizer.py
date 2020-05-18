@@ -318,9 +318,6 @@ class TargetTracker(object):
         for id, pts in enumerate(self.target_points):
             center = np.mean(pts, axis=0)
             w, v = np.linalg.eig(np.cov(pts.transpose()))
-            #eigx_n = PyKDL.Vector(v[0, 0], v[0, 1], v[0, 2])
-            #eigy_n = -PyKDL.Vector(v[1, 0], v[1, 1], v[1, 2])
-            #eigz_n = PyKDL.Vector(v[2, 0], v[2, 1], v[2, 2])
             eigx_n = PyKDL.Vector(v[0, 0], v[1, 0], v[2, 0])
             eigy_n = -PyKDL.Vector(v[0, 1], v[1, 1], v[2, 1])
             eigz_n = PyKDL.Vector(v[0, 2], v[1, 2], v[2, 2])

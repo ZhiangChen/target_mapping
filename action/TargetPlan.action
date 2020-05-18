@@ -1,0 +1,8 @@
+std_msgs/Header header
+std_msgs/Int8 id
+std_msgs/Int8 mode
+visualization_msgs/MarkerArray markers
+---
+bool success
+---
+float64 feedback

@@ -15,25 +15,33 @@ import numpy as np
 from tf.transformations import quaternion_from_euler
 from std_srvs.srv import Empty
 import copy
+from threading import Thread
+import target_mapping.msg
 
 class PathPlanner(object):
     def __init__(self):
-        self.status_ = 0
+        self.id_ = -1
         self.current_pose_ = PoseStamped()
         self.current_pose_.pose.orientation.w = 1
         self.saved_pose_ = PoseStamped()
         self.marker_ = Marker()
         self.goal_pose_ = Pose()
+        self.plan_mode_ = -1
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
-
+        self.as_ = actionlib.SimpleActionServer("/path_planner/target_plan", target_mapping.msg.TargetPlanAction,
+                                                execute_cb=self.targetPlanCallback, auto_start=False)
+        self.as_.start()
         current_pose_sub_ = rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.poseCallback,
                                              queue_size=1)
-        status_sub_ = rospy.Subscriber('/path_planner/status', Int8, self.statusCallback, queue_size=1)
-        markers_sub = rospy.Subscriber("/target_localizer/ellipsoids", self.markersCallback, MarkerArray, queue_size=1)
         self.client_ = actionlib.SimpleActionClient('waypoints', uav_motion.msg.waypointsAction)
         self.client_.wait_for_server()
+
+        #self.plan_thread_ = Thread(target=self.targetPlan, args=())
+        #self.plan_thread_.daemon = True
+        #self.plan_thread_.start()
+
         rospy.loginfo("Path planner has been initialized!")
 
 
@@ -82,7 +90,6 @@ class PathPlanner(object):
             rospy.sleep(3.5)
         rospy.loginfo('Done!')
 
-
     def getHeads(self, waypoints):
         yaws = []
         nm = waypoints.shape[0]
@@ -98,33 +105,33 @@ class PathPlanner(object):
     def poseCallback(self, pose):
         self.current_pose_ = pose
 
-    def statusCallback(self, status):
-        self.status_ = status.data
+    def targetPlanCallback(self, target_plan):
+        self.id_ = target_plan.id.data
+        self.plan_mode_ = target_plan.mode.data
+        self.marker_ = target_plan.markers.markers[self.id_]
 
-    def markersCallback(self, markers):
-        if self.status_ != 0:
-            self.marker_ = markers.markers[self.status_]
+        self.saved_pose_ = copy.deepcopy(self.current_pose_)
+        self.stop_srv_client_()
+        rospy.sleep(1.)
+        save_pose = Pose()
+        save_pose.position.x = self.saved_pose_.pose.position.x
+        save_pose.position.y = self.saved_pose_.pose.position.y
+        save_pose.position.z = self.saved_pose_.pose.position.z
 
-            self.saved_pose_ = copy.deepcopy(self.current_pose_)
-            self.stop_srv_client_()
-            rospy.sleep(1.)
-            save_pose = Pose()
-            save_pose.position.x = self.saved_pose_.pose.position.x
-            save_pose.position.y = self.saved_pose_.pose.position.y
-            save_pose.position.z = self.saved_pose_.pose.position.z
+        save_pose.orientation.x = self.saved_pose_.pose.orientation.x
+        save_pose.orientation.y = self.saved_pose_.pose.orientation.y
+        save_pose.orientation.z = self.saved_pose_.pose.orientation.z
+        save_pose.orientation.w = self.saved_pose_.pose.orientation.w
+        goal = uav_motion.msg.waypointsGoal()
+        goal.poses.append(save_pose)
+        self.client_.send_goal(goal)
+        rospy.sleep(2.0)
 
-            save_pose.orientation.x = self.saved_pose_.pose.orientation.x
-            save_pose.orientation.y = self.saved_pose_.pose.orientation.y
-            save_pose.orientation.z = self.saved_pose_.pose.orientation.z
-            save_pose.orientation.w = self.saved_pose_.pose.orientation.w
-            goal = uav_motion.msg.waypointsGoal()
-            goal.poses.append(save_pose)
-            self.client_.send_goal(goal)
-            rospy.sleep(2.0)
-
-            self.getLocalizerPath()
-            self.getMapperPath()
-
+        if self.plan_mode_ == 1:
+            self.getLocalizing()
+        elif self.plan_mode_ == 2:
+            self.getMapping()
+        else:
             goal = uav_motion.msg.waypointsGoal()
             goal.poses.append(save_pose)
             self.client_.send_goal(goal)
@@ -144,10 +151,12 @@ class PathPlanner(object):
             goal.poses.append(self.goal_pose_)
             self.client_.send_goal(goal)
 
-    def getLocalizerPath(self):
-        pass
 
-    def getMapperPath(self):
+    def getLocalizing(self):
+        
+
+
+    def getMapping(self):
         pass
 
 

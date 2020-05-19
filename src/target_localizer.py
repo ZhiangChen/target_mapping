@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Zhiang Chen
-Feb 2020
+May 2020
 Localize targets using particle filter
 """
 
@@ -322,7 +322,6 @@ class TargetTracker(object):
     def localizeTarget(self):
         if len(self.target_points) <= self.searching_id:
             return
-        points = self.target_points[self.searching_id]
         kld = self.KL_D[self.searching_id]
         de = self.DE[self.searching_id]
         if kld == -1:
@@ -336,33 +335,40 @@ class TargetTracker(object):
         if (not self.checkPointsInImage) & (self.status == 1):
             self.requestLocalizing()
 
+        # deregister when differential entropy is too small or too large
+
         # confirm localization when KL divergence is too small
         if (kld < 5) & (self.status == 1):
             self.localized[self.searching_id] = True
             self.requestMapping()
             return
 
-        # deregister when differential entropy is too small or too large
-
         # start mapping
         if self.status == 2:
             result = self.requestMapping()  # this will wait until mapping is done
             self.mapped[self.searching_id] = result
             self.searching_id += 1
+            self.continueSearch()
             return
+
+    def requestLocalizing(self):
+        goal = target_mapping.msg.TargetPlanGoal()
+        goal.header.stamp = rospy.Time.now()
+        goal.id.data = self.searching_id
+        goal.mode.data = 1
+        goal.markers = self.markers
+        self.client.send_goal(goal)
+        self.status = 1
 
     def checkPointsInImage(self):
         return True
 
+    def requestMapping(self):
+        self.status = 2
+        return True
 
     def continueSearch(self):
         self.status = 0
-
-    def requestLocalizing(self):
-        self.status = 1
-
-    def requestMapping(self):
-        self.status = 2
 
     def image_callback(self, data):
         self.image_header = data.header

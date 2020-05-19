@@ -26,7 +26,7 @@ class PathPlanner(object):
         self.saved_pose_ = PoseStamped()
         self.marker_ = Marker()
         self.goal_pose_ = Pose()
-        self.plan_mode_ = -1
+        self.plan_mode_ = 0
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
@@ -46,7 +46,7 @@ class PathPlanner(object):
 
 
     def startSearch(self):
-        positions = np.asarray(((0, 0, 5), (0, -1, 5), (-12, -12, 5), (0, 0, 5)))
+        positions = np.asarray(((0, 0, 4),  (-15, -15, 4), (0, 0, 4)))
         yaws = self.getHeads(positions)
         assert positions.shape[0] == len(yaws)
 
@@ -130,9 +130,9 @@ class PathPlanner(object):
         result = target_mapping.msg.TargetPlanActionResult()
 
         if self.plan_mode_ == 1:
-            result.success = self.getLocalizing()
+            result.result.success = self.getLocalizing()
         elif self.plan_mode_ == 2:
-            result.success = self.getMapping()
+            result.result.success = self.getMapping()
         else:
             goal = uav_motion.msg.waypointsGoal()
             goal.poses.append(save_pose)
@@ -170,3 +170,7 @@ if __name__ == '__main__':
     rospy.init_node('path_planner', anonymous=False)
     path_planner = PathPlanner()
     path_planner.startSearch()
+    try:
+        rospy.spin()
+    except rospy.ROSInterruptException:
+        rospy.loginfo("Node killed!")

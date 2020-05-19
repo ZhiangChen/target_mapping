@@ -23,7 +23,7 @@ from numpy.linalg import det
 class BBoxTracker(object):
     def __init__(self):
         bbox_nn_sub = rospy.Subscriber('/darknet_ros/bounding_boxes', BoundingBoxes, self.bbox_nn_callback, queue_size=1)
-        raw_image_sub = rospy.Subscriber('/r200/depth/image_raw', Image, self.raw_image_callback, queue_size=1)
+        raw_image_sub = rospy.Subscriber('/r200/rgb/image_raw', Image, self.raw_image_callback, queue_size=1)
 
         self.bridge = CvBridge()
         self.pub = rospy.Publisher("/bbox_tracker/detection_image", Image, queue_size=1)
@@ -84,11 +84,14 @@ class BBoxTracker(object):
                         # check if new bbox is existing
                         idx = self.__checkRegistration(bbox_new, X)
                         if idx == -1:
-                            X.append(bbox_new)
-                            Cov.append(self.Q)
                             bbox_klt = self.__bbox_msg2np([bbox_new])
                             startXs, startYs = getFeatures(cv2.cvtColor(self.image_old, cv2.COLOR_RGB2GRAY), bbox_klt,
                                                            use_shi=False)
+                            n_features_left = np.sum(startXs != -1)
+                            if n_features_left < 15:
+                                continue
+                            X.append(bbox_new)
+                            Cov.append(self.Q)
                             self.startXs = np.append(self.startXs, startXs, axis=1)
                             self.startYs = np.append(self.startYs, startYs, axis=1)
                             self.bboxes_klt = np.append(self.bboxes_klt, bbox_klt, axis=0)
@@ -165,7 +168,7 @@ class BBoxTracker(object):
 
     def __updateMotion(self, new_image, prediction):
         newXs, newYs = estimateAllTranslation(self.startXs, self.startYs, self.image_old, new_image)
-
+        print(self.bboxes_klt.shape)
         if prediction:
             # print(1, self.Cov[0])
             Xs, Ys, self.bboxes_klt, self.Cov = applyGeometricTransformation(self.startXs, self.startYs, newXs, newYs, self.bboxes_klt, self.Cov, self.R)
@@ -240,7 +243,8 @@ class BBoxTracker(object):
         return iou
 
     def __draw_BBox(self, image, X, Image_msg=True):
-        for x in X:
+        Xs = copy.deepcopy(X)
+        for x in Xs:
             image = cv2.rectangle(image, (int(x.xmin), int(x.ymin)), (int(x.xmax), int(x.ymax)), (0, 255, 255), 2)
         if Image_msg:
             image = self.bridge.cv2_to_imgmsg(image, 'rgb8')

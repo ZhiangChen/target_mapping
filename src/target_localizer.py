@@ -31,22 +31,30 @@ from visualization_msgs.msg import Marker, MarkerArray
 import visualization_msgs
 from geometry_msgs.msg import Point
 import PyKDL
-
-
+import target_mapping.msg
+import actionlib
 
 ROS_BAG = True
 
 class TargetTracker(object):
     def __init__(self, particle_nm=1000, z_range=(0.2, 4), a=0.5):
         self.nm = particle_nm
-        self.a = a # https://github.com/ZhiangChen/target_mapping/wiki/Target-Localization-and-Body-Estimation-by-3D-Points
+        self.a = a  # https://github.com/ZhiangChen/target_mapping/wiki/Target-Localization-and-Body-Estimation-by-3D-Points
         self.w = []
-        self.target_points = [] # a list of Nx3 ndarrays, in world coord system
-        self.z_min = z_range[0] # the range of particles along z axis in camera coord system
+        self.target_points = []  # a list of Nx3 ndarrays, in world coord system
+        self.z_min = z_range[0]  # the range of particles along z axis in camera coord system
         self.z_max = z_range[1]
+        self.searching_id = 0
+        self.localized = []
+        self.mapped = []
+        self.markers = MarkerArray()
+        self.KL_D = []  # KL divergence
+        self.DE = []  # differential entropy
+        self.status = 0  # 0: searching; 1: localizing; 2: mapping
 
         self.pub_markers = rospy.Publisher("/target_localizer/ellipsoids", MarkerArray, queue_size=1)
-
+        self.client = actionlib.SimpleActionClient("/path_planner/target_plan", target_mapping.msg.TargetPlanAction)
+        self.client.wait_for_server()
 
         self.publish_image = True
         if self.publish_image:
@@ -106,9 +114,9 @@ class TargetTracker(object):
                     self.updatePointsDF(ids, bbox, pose)
 
         print("target #: %d" % len(self.target_points))
-
         variances = self.computeTargetsVariance()
         self.publishTargetPoints()
+        self.localizeTarget()
 
     def checkBBoxOnEdge(self, bbox, p=20):
         x1 = bbox.xmin
@@ -205,6 +213,10 @@ class TargetTracker(object):
         points_w = points_w[:3, :].transpose()  # nm x 3
         self.target_points.append(points_w)
         self.w.append(1)
+        self.KL_D.append(-1)
+        self.DE.append(-1)
+        self.localized.append(False)
+        self.mapped.append(False)
 
     def updatePoints(self, ids, cone, pose):
         # return information gain
@@ -258,7 +270,10 @@ class TargetTracker(object):
         T_world2camera = inv(T_camera2world)
 
         for id in ids:
+            if self.localized[id]:
+                continue
             points = self.target_points[id]
+            old_points = copy.deepcopy(points)
             #w = np.random.normal(size=(self.nm, 3)) * self.w[id]
             #self.w[id] = self.w[id] * 0.9 + 0.001
             w = np.random.normal(size=(self.nm, 2)) * 0.05
@@ -300,7 +315,54 @@ class TargetTracker(object):
             new_points = np.take(points, resample_ids, axis=0)
 
             self.target_points[id] = new_points
+            kld, de = self.measurePoints(old_points, new_points)
+            self.KL_D[id] = kld
+            self.DE[id] = de
 
+    def localizeTarget(self):
+        if len(self.target_points) <= self.searching_id:
+            return
+        points = self.target_points[self.searching_id]
+        kld = self.KL_D[self.searching_id]
+        de = self.DE[self.searching_id]
+        if kld == -1:
+            return
+
+        # start localization
+        if self.status == 0:
+            self.requestLocalizing()
+
+        # check if new localization planning is needed
+        if (not self.checkPointsInImage) & (self.status == 1):
+            self.requestLocalizing()
+
+        # confirm localization when KL divergence is too small
+        if (kld < 5) & (self.status == 1):
+            self.localized[self.searching_id] = True
+            self.requestMapping()
+            return
+
+        # deregister when differential entropy is too small or too large
+
+        # start mapping
+        if self.status == 2:
+            result = self.requestMapping()  # this will wait until mapping is done
+            self.mapped[self.searching_id] = result
+            self.searching_id += 1
+            return
+
+    def checkPointsInImage(self):
+        return True
+
+
+    def continueSearch(self):
+        self.status = 0
+
+    def requestLocalizing(self):
+        self.status = 1
+
+    def requestMapping(self):
+        self.status = 2
 
     def image_callback(self, data):
         self.image_header = data.header
@@ -331,8 +393,7 @@ class TargetTracker(object):
 
         if len(self.target_points) > 0:
             self.pub_markers.publish(markerArray)
-
-
+            self.markers = copy.deepcopy(markerArray)
 
     def markerVector(self, id, scale, rotation, position, quaternion):
         marker = Marker()
@@ -363,10 +424,8 @@ class TargetTracker(object):
         marker.pose.orientation.w = quaternion[3]
         return marker
 
-
     def deregisterTarget(self, id):
         pass
-
 
     def getTransformFromPose(self, pose):
         trans = tf.transformations.translation_matrix((pose.position.x, pose.position.y, pose.position.z))
@@ -387,7 +446,20 @@ class TargetTracker(object):
         pc_msg = pcl2.create_cloud_xyz32(header, all_points)
         self.pcl_pub.publish(pc_msg)
 
-
+    def measurePoints(self, old_points, points):
+        p0 = copy.deepcopy(old_points)
+        p1 = copy.deepcopy(points)
+        u0 = p0.mean(axis=0)
+        u1 = p1.mean(axis=0)
+        cov0 = np.cov(p0.transpose())
+        cov1 = np.cov(p1.transpose())
+        # KL( P_old | P_new)
+        term1 = np.matmul(inv(cov1), cov0).trace()
+        term2 = np.matmul(np.matmul((u1-u0).transpose(), inv(cov1)), (u1-u0))
+        term4 = np.log(det(cov1)/det(cov0))
+        kld = (term1 + term2 - 3 + term4)*0.5
+        de = 4.2568155996140185 + np.log(det(cov1)) / 2.0
+        return kld, de
 
 if __name__ == '__main__':
     rospy.init_node('target_localizer', anonymous=False)

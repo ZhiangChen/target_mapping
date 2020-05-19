@@ -127,10 +127,12 @@ class PathPlanner(object):
         self.client_.send_goal(goal)
         rospy.sleep(2.0)
 
+        result = target_mapping.msg.TargetPlanActionResult()
+
         if self.plan_mode_ == 1:
-            self.getLocalizing()
+            result.success = self.getLocalizing()
         elif self.plan_mode_ == 2:
-            self.getMapping()
+            result.success = self.getMapping()
         else:
             goal = uav_motion.msg.waypointsGoal()
             goal.poses.append(save_pose)
@@ -150,14 +152,15 @@ class PathPlanner(object):
             goal = uav_motion.msg.waypointsGoal()
             goal.poses.append(self.goal_pose_)
             self.client_.send_goal(goal)
-
+            result.success = True
+        self.as_.set_succeeded(result)
 
     def getLocalizing(self):
-        
 
+        return True
 
     def getMapping(self):
-        pass
+        return True
 
 
 

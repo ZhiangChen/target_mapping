@@ -1,6 +1,7 @@
 std_msgs/Header header
 std_msgs/Int8 id
 std_msgs/Int8 mode
+geometry_msgs/Pose camera_pose
 visualization_msgs/MarkerArray markers
 ---
 bool success

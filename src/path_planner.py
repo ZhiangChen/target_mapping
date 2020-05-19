@@ -74,6 +74,7 @@ class PathPlanner(object):
                 if dist < 0.2:
                     break
 
+            rospy.sleep(1.)
             goal = uav_motion.msg.waypointsGoal()
             goal_p = positions[i]
             yaw = yaws[i]
@@ -87,7 +88,7 @@ class PathPlanner(object):
             self.goal_pose_.orientation.w = goal_q[3]
             goal.poses.append(self.goal_pose_)
             self.client_.send_goal(goal)
-            rospy.sleep(3.5)
+            rospy.sleep(5.)
         rospy.loginfo('Done!')
 
     def getHeads(self, waypoints):
@@ -108,11 +109,12 @@ class PathPlanner(object):
     def targetPlanCallback(self, target_plan):
         self.id_ = target_plan.id.data
         self.plan_mode_ = target_plan.mode.data
-        self.marker_ = target_plan.markers.markers[self.id_]
+        if self.plan_mode_ != 0:
+            self.marker_ = target_plan.markers.markers[self.id_]
 
         self.saved_pose_ = copy.deepcopy(self.current_pose_)
         self.stop_srv_client_()
-        rospy.sleep(1.)
+        rospy.sleep(1.5)
         save_pose = Pose()
         save_pose.position.x = self.saved_pose_.pose.position.x
         save_pose.position.y = self.saved_pose_.pose.position.y
@@ -125,14 +127,14 @@ class PathPlanner(object):
         goal = uav_motion.msg.waypointsGoal()
         goal.poses.append(save_pose)
         self.client_.send_goal(goal)
-        rospy.sleep(2.0)
+        rospy.sleep(3.0)
 
-        result = target_mapping.msg.TargetPlanActionResult()
+        result = target_mapping.msg.TargetPlanResult()
 
         if self.plan_mode_ == 1:
-            result.result.success = self.getLocalizing()
+            result.success = self.getLocalizing()
         elif self.plan_mode_ == 2:
-            result.result.success = self.getMapping()
+            result.success = self.getMapping()
         else:
             goal = uav_motion.msg.waypointsGoal()
             goal.poses.append(save_pose)
@@ -153,13 +155,17 @@ class PathPlanner(object):
             goal.poses.append(self.goal_pose_)
             self.client_.send_goal(goal)
             result.success = True
+
         self.as_.set_succeeded(result)
 
     def getLocalizing(self):
-
+        print('localizing')
+        rospy.sleep(5)
         return True
 
     def getMapping(self):
+        print('mapping')
+        rospy.sleep(5)
         return True
 
 

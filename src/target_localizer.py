@@ -37,7 +37,7 @@ import actionlib
 ROS_BAG = True
 
 class TargetTracker(object):
-    def __init__(self, particle_nm=1000, z_range=(0.2, 4), a=0.5):
+    def __init__(self, particle_nm=1000, z_range=(0.2, 10), a=0.5):
         self.nm = particle_nm
         self.a = a  # https://github.com/ZhiangChen/target_mapping/wiki/Target-Localization-and-Body-Estimation-by-3D-Points
         self.w = []
@@ -54,7 +54,7 @@ class TargetTracker(object):
 
         self.pub_markers = rospy.Publisher("/target_localizer/ellipsoids", MarkerArray, queue_size=1)
         self.client = actionlib.SimpleActionClient("/path_planner/target_plan", target_mapping.msg.TargetPlanAction)
-        self.client.wait_for_server()
+        #self.client.wait_for_server()
 
         self.publish_image = True
         if self.publish_image:
@@ -102,6 +102,7 @@ class TargetTracker(object):
     def callback(self, bbox_msg, pose_msg):
         pose = pose_msg.pose
         bboxes = bbox_msg.bounding_boxes
+        img = self.img
 
         for i, bbox in enumerate(bboxes):
             if not self.checkBBoxOnEdge(bbox):
@@ -116,7 +117,7 @@ class TargetTracker(object):
         print("target #: %d" % len(self.target_points))
         variances = self.computeTargetsVariance()
         self.publishTargetPoints()
-        self.localizeTarget()
+        #self.localizeTarget()
 
     def checkBBoxOnEdge(self, bbox, p=20):
         x1 = bbox.xmin
@@ -330,6 +331,7 @@ class TargetTracker(object):
         # start localization
         if self.status == 0:
             self.requestLocalizing()
+            return
 
         # check if new localization planning is needed
         if (not self.checkPointsInImage) & (self.status == 1):
@@ -340,18 +342,16 @@ class TargetTracker(object):
         # confirm localization when KL divergence is too small
         if (kld < 5) & (self.status == 1):
             self.localized[self.searching_id] = True
-            self.requestMapping()
-            return
-
-        # start mapping
-        if self.status == 2:
-            result = self.requestMapping()  # this will wait until mapping is done
+            # start mapping
+            result = self.requestMapping()
             self.mapped[self.searching_id] = result
             self.searching_id += 1
             self.continueSearch()
             return
 
+
     def requestLocalizing(self):
+        print('requesting localizing')
         goal = target_mapping.msg.TargetPlanGoal()
         goal.header.stamp = rospy.Time.now()
         goal.id.data = self.searching_id
@@ -364,10 +364,23 @@ class TargetTracker(object):
         return True
 
     def requestMapping(self):
+        print('requesting mapping')
+        goal = target_mapping.msg.TargetPlanGoal()
+        goal.header.stamp = rospy.Time.now()
+        goal.id.data = self.searching_id
+        goal.mode.data = 2
+        goal.markers = self.markers
+        self.client.send_goal(goal)
         self.status = 2
         return True
 
     def continueSearch(self):
+        goal = target_mapping.msg.TargetPlanGoal()
+        goal.header.stamp = rospy.Time.now()
+        goal.id.data = self.searching_id
+        goal.mode.data = 0
+        goal.markers = self.markers
+        self.client.send_goal(goal)
         self.status = 0
 
     def image_callback(self, data):

@@ -160,6 +160,17 @@ class PathPlanner(object):
 
     def getLocalizing(self):
         print('localizing')
+        # 1. generate a circle
+        # use the center of the marker, (x, y),
+        # and the current drone height, (h), as the circle center, (x, y, h).
+        # then we only need to decide the radius of the circle.
+        # assume the target is always in the center of the image,
+        # we can compute the angle between camera's z axis and horizontal plane, alpha
+        # the circle will be determined by object center (x, y, z), h, and alpha
+
+        # 2. sample keypoints
+        # from drone's closest point to the point that is farthest to the longest axis
+
         rospy.sleep(5)
         return True
 

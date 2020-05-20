@@ -30,8 +30,8 @@ class BBoxTracker(object):
         self.pub = rospy.Publisher("/bbox_tracker/detection_image", Image, queue_size=1)
         self.refined_bboxes_msg = BoundingBoxes()
         self.pub1 = rospy.Publisher("/bbox_tracker/bounding_boxes", BoundingBoxes, queue_size=1)
-        self.bboxes_new = []
 
+        self.bboxes_new = []
         self.X = []  # a list of darknet_ros_msgs/BoundingBox
         self.Cov = []  # this is in Euclidean coordinate system
         self.image_new = np.zeros(1)
@@ -135,6 +135,7 @@ class BBoxTracker(object):
                     self.pub.publish(image_msg)
                     self.__publish_bbox()
 
+
     def __checkRegistration(self, bbox_new, X, threshold=0.3):
         """
         :param bbox_new:
@@ -196,7 +197,8 @@ class BBoxTracker(object):
             # deregistration 1: measure differential entropy to remove false positive detection
             cov = self.Cov[i]
             DE = 5.675754132818691 + np.log(det(cov))/2.0 # differential entropy for Multivariate normal distribution
-            if DE >= 17.:
+            #print('DE: ', DE)
+            if DE >= 16.:
                 del self.X[i]
                 del self.Cov[i]
                 self.bboxes_klt = np.delete(self.bboxes_klt, i, 0)

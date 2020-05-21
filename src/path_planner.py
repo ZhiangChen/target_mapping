@@ -17,6 +17,7 @@ from std_srvs.srv import Empty
 import copy
 from threading import Thread
 import target_mapping.msg
+import tf
 
 class PathPlanner(object):
     def __init__(self):
@@ -27,6 +28,7 @@ class PathPlanner(object):
         self.marker_ = Marker()
         self.goal_pose_ = Pose()
         self.plan_mode_ = 0
+        self.alpha = 45./180*np.pi  # camera angle
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
@@ -46,7 +48,7 @@ class PathPlanner(object):
 
 
     def startSearch(self):
-        positions = np.asarray(((0, 0, 4),  (-15, -15, 4), (0, 0, 4)))
+        positions = np.asarray(((0, 0, 4),  (-15, -15, 4)))
         yaws = self.getHeads(positions)
         assert positions.shape[0] == len(yaws)
 
@@ -107,27 +109,16 @@ class PathPlanner(object):
         self.current_pose_ = pose
 
     def targetPlanCallback(self, target_plan):
+        if (self.plan_mode_ == 0) & (target_plan.mode.data != 0):
+            self.saved_pose_ = copy.deepcopy(self.current_pose_)
+
         self.id_ = target_plan.id.data
         self.plan_mode_ = target_plan.mode.data
         if self.plan_mode_ != 0:
             self.marker_ = target_plan.markers.markers[self.id_]
 
-        self.saved_pose_ = copy.deepcopy(self.current_pose_)
         self.stop_srv_client_()
-        rospy.sleep(1.5)
-        save_pose = Pose()
-        save_pose.position.x = self.saved_pose_.pose.position.x
-        save_pose.position.y = self.saved_pose_.pose.position.y
-        save_pose.position.z = self.saved_pose_.pose.position.z
-
-        save_pose.orientation.x = self.saved_pose_.pose.orientation.x
-        save_pose.orientation.y = self.saved_pose_.pose.orientation.y
-        save_pose.orientation.z = self.saved_pose_.pose.orientation.z
-        save_pose.orientation.w = self.saved_pose_.pose.orientation.w
-        goal = uav_motion.msg.waypointsGoal()
-        goal.poses.append(save_pose)
-        self.client_.send_goal(goal)
-        rospy.sleep(3.0)
+        rospy.sleep(3.)
 
         result = target_mapping.msg.TargetPlanResult()
 
@@ -136,6 +127,16 @@ class PathPlanner(object):
         elif self.plan_mode_ == 2:
             result.success = self.getMapping()
         else:
+            print("resuming")
+            save_pose = Pose()
+            save_pose.position.x = self.saved_pose_.pose.position.x
+            save_pose.position.y = self.saved_pose_.pose.position.y
+            save_pose.position.z = self.saved_pose_.pose.position.z
+
+            save_pose.orientation.x = self.saved_pose_.pose.orientation.x
+            save_pose.orientation.y = self.saved_pose_.pose.orientation.y
+            save_pose.orientation.z = self.saved_pose_.pose.orientation.z
+            save_pose.orientation.w = self.saved_pose_.pose.orientation.w
             goal = uav_motion.msg.waypointsGoal()
             goal.poses.append(save_pose)
             self.client_.send_goal(goal)
@@ -165,21 +166,73 @@ class PathPlanner(object):
         # and the current drone height, (h), as the circle center, (x, y, h).
         # then we only need to decide the radius of the circle.
         # assume the target is always in the center of the image,
-        # we can compute the angle between camera's z axis and horizontal plane, alpha
+        # we can compute the angle between camera's z axis and horizontal plane, alpha.
         # the circle will be determined by object center (x, y, z), h, and alpha
+        marker_position = np.asarray((self.marker_.pose.position.x, self.marker_.pose.position.y, self.marker_.pose.position.z))
+        drone_position = np.asarray((self.current_pose_.pose.position.x, self.current_pose_.pose.position.y, self.current_pose_.pose.position.z))
+        h = self.current_pose_.pose.position.z
+        circle_center = np.asarray((self.marker_.pose.position.x, self.marker_.pose.position.y, h))
+        radius = (h - marker_position[2])/np.tan(self.alpha)
 
         # 2. sample keypoints
-        # from drone's closest point to the point that is farthest to the longest axis
-
-        rospy.sleep(5)
+        # from drone's closest point to the farthest point
+        # get the closest point
+        dir_cp = drone_position - circle_center
+        dir_cp = dir_cp/np.linalg.norm(dir_cp)
+        # cp = circle_center + dir_cp * radius
+        # get the farthest point
+        """
+        # this is ok to find the farthest point that is farthest to the longest axis
+        marker_q = (self.marker_.pose.orientation.x, self.marker_.pose.orientation.y, self.marker_.pose.orientation.z, self.marker_.pose.orientation.w)
+        marker_rot = tf.transformations.quaternion_matrix(marker_q)
+        marker_scale = (self.marker_.scale.x, self.marker_.scale.y, self.marker_.scale.z)
+        idx = np.argmax(marker_scale)
+        long_axis = marker_rot[:, idx]
+        """
+        # or the farthest point is the opposite of the closest point
+        positions = []
+        yaws = []
+        N = 10  # the number of key points on the trajectory
+        step = 0.8*np.pi/(N-1)
+        yaw_cp = np.arctan2(-dir_cp[1], -dir_cp[0])
+        for i in range(N):
+            dir_i = self.rotateDirection(dir_cp, step*i)
+            pos = circle_center + dir_i * radius
+            #yaw = np.arctan2(-dir_i[1], -dir_i[0])  # this will cause some issues because atan2 is not continuous
+            yaw = yaw_cp + step*i
+            positions.append(pos)
+            yaws.append(yaw)
+        self.sendWaypoints(positions, yaws)
         return True
+
 
     def getMapping(self):
         print('mapping')
         rospy.sleep(5)
         return True
 
+    def rotateDirection(self, d, theta):
+        r = np.array(((np.cos(theta), -np.sin(theta), 0),
+                      (np.sin(theta), np.cos(theta), 0),
+                      (0, 0, 0,)))
+        return np.matmul(r, d)
 
+    def sendWaypoints(self, positions, yaws):
+        goal = uav_motion.msg.waypointsGoal()
+        for i in range(len(yaws)):
+            p = positions[i]
+            yaw = yaws[i]
+            q = quaternion_from_euler(0, 0, yaw)
+            pose = Pose()
+            pose.position.x = float(p[0])
+            pose.position.y = float(p[1])
+            pose.position.z = float(p[2])
+            pose.orientation.x = q[0]
+            pose.orientation.y = q[1]
+            pose.orientation.z = q[2]
+            pose.orientation.w = q[3]
+            goal.poses.append(pose)
+        self.client_.send_goal(goal)
 
 
 

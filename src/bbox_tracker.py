@@ -11,6 +11,7 @@ import rospy
 import rospkg
 from darknet_ros_msgs.msg import BoundingBoxes
 from darknet_ros_msgs.msg import ObjectCount
+from sensor_msgs.msg import PointCloud2
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import numpy as np

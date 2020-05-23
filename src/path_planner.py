@@ -7,17 +7,20 @@ path planner
 import rospy
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Point
 from std_msgs.msg import Int8
 from visualization_msgs.msg import Marker, MarkerArray
 import uav_motion.msg
 import actionlib
 import numpy as np
 from tf.transformations import quaternion_from_euler
+from tf.transformations import euler_from_quaternion
 from std_srvs.srv import Empty
 import copy
 from threading import Thread
 import target_mapping.msg
 import tf
+from sensor_msgs.msg import Image
 
 class PathPlanner(object):
     def __init__(self):
@@ -26,9 +29,11 @@ class PathPlanner(object):
         self.current_pose_.pose.orientation.w = 1
         self.saved_pose_ = PoseStamped()
         self.marker_ = Marker()
-        self.goal_pose_ = Pose()
+        self.goal_position_ = Point()
+        self.goal_yaw_ = 0
         self.plan_mode_ = 0
         self.alpha = 45./180*np.pi  # camera angle
+        self.mapping = False
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
@@ -44,11 +49,14 @@ class PathPlanner(object):
         #self.plan_thread_.daemon = True
         #self.plan_thread_.start()
 
+        self.mapper_pub = rospy.Publisher("/image_raw", Image, queue_size=1)
+        raw_image_sub = rospy.Subscriber('/r200/rgb/image_raw', Image, self.mapperCallback, queue_size=1)
+
         rospy.loginfo("Path planner has been initialized!")
 
 
     def startSearch(self):
-        positions = np.asarray(((0, 0, 4),  (-15, -15, 4)))
+        positions = np.asarray(((0, 0, 5),  (-6, -6, 5)))
         yaws = self.getHeads(positions)
         assert positions.shape[0] == len(yaws)
 
@@ -56,16 +64,15 @@ class PathPlanner(object):
             goal = uav_motion.msg.waypointsGoal()
             goal_p = positions[i]
 
-            self.goal_pose_.position.x = float(goal_p[0])
-            self.goal_pose_.position.y = float(goal_p[1])
-            self.goal_pose_.position.z = float(goal_p[2])
+            self.goal_position_.x = float(goal_p[0])
+            self.goal_position_.y = float(goal_p[1])
+            self.goal_position_.z = float(goal_p[2])
+            q = self.current_pose_.pose.orientation
+            yaw = euler_from_quaternion((q.x, q.y, q.z, q.w))[2]
+            self.goal_yaw_ = yaw
 
-            self.goal_pose_.orientation.x = self.current_pose_.pose.orientation.x
-            self.goal_pose_.orientation.y = self.current_pose_.pose.orientation.y
-            self.goal_pose_.orientation.z = self.current_pose_.pose.orientation.z
-            self.goal_pose_.orientation.w = self.current_pose_.pose.orientation.w
-
-            goal.poses.append(self.goal_pose_)
+            goal.positions.append(self.goal_position_)
+            goal.yaws.append(yaw)
             self.client_.send_goal(goal)
             while True & (not rospy.is_shutdown()):
                 rospy.sleep(1.)
@@ -78,20 +85,12 @@ class PathPlanner(object):
 
             rospy.sleep(1.)
             goal = uav_motion.msg.waypointsGoal()
-            goal_p = positions[i]
-            yaw = yaws[i]
-            goal_q = quaternion_from_euler(0, 0, yaw)
-            self.goal_pose_.position.x = float(goal_p[0])
-            self.goal_pose_.position.y = float(goal_p[1])
-            self.goal_pose_.position.z = float(goal_p[2])
-            self.goal_pose_.orientation.x = goal_q[0]
-            self.goal_pose_.orientation.y = goal_q[1]
-            self.goal_pose_.orientation.z = goal_q[2]
-            self.goal_pose_.orientation.w = goal_q[3]
-            goal.poses.append(self.goal_pose_)
+            goal.positions.append(self.goal_position_)
+            goal.yaws.append(yaws[i])
             self.client_.send_goal(goal)
             rospy.sleep(5.)
-        rospy.loginfo('Done!')
+
+
 
     def getHeads(self, waypoints):
         yaws = []
@@ -107,6 +106,10 @@ class PathPlanner(object):
 
     def poseCallback(self, pose):
         self.current_pose_ = pose
+
+    def mapperCallback(self, image):
+        if self.mapping:
+            self.mapper_pub.publish(image)
 
     def targetPlanCallback(self, target_plan):
         if (self.plan_mode_ == 0) & (target_plan.mode.data != 0):
@@ -124,40 +127,42 @@ class PathPlanner(object):
 
         if self.plan_mode_ == 1:
             result.success = self.getLocalizing()
+            self.as_.set_succeeded(result)
         elif self.plan_mode_ == 2:
             result.success = self.getMapping()
-        else:
+            self.as_.set_succeeded(result)
+        elif self.plan_mode_ == 0:
             print("resuming")
-            save_pose = Pose()
-            save_pose.position.x = self.saved_pose_.pose.position.x
-            save_pose.position.y = self.saved_pose_.pose.position.y
-            save_pose.position.z = self.saved_pose_.pose.position.z
+            save_position = Point()
+            save_position.x = self.saved_pose_.pose.position.x
+            save_position.y = self.saved_pose_.pose.position.y
+            save_position.z = self.saved_pose_.pose.position.z
 
-            save_pose.orientation.x = self.saved_pose_.pose.orientation.x
-            save_pose.orientation.y = self.saved_pose_.pose.orientation.y
-            save_pose.orientation.z = self.saved_pose_.pose.orientation.z
-            save_pose.orientation.w = self.saved_pose_.pose.orientation.w
+            q = self.saved_pose_.pose.orientation
+            yaw = euler_from_quaternion((q.x, q.y, q.z, q.w))[2]
+
             goal = uav_motion.msg.waypointsGoal()
-            goal.poses.append(save_pose)
+            goal.positions.append(save_position)
+            goal.yaws.append(yaw)
             self.client_.send_goal(goal)
             while True & (not rospy.is_shutdown()):
                 rospy.sleep(1.)
                 current_p = np.asarray((self.current_pose_.pose.position.x,
                                         self.current_pose_.pose.position.y,
                                         self.current_pose_.pose.position.z))
-                goal_p = np.asarray((save_pose.position.x,
-                                     save_pose.position.y,
-                                     save_pose.position.z))
+                goal_p = np.asarray((save_position.x,
+                                     save_position.y,
+                                     save_position.z))
                 dist = np.linalg.norm(goal_p - current_p)
                 if dist < 0.2:
                     break
             rospy.sleep(1.)
             goal = uav_motion.msg.waypointsGoal()
-            goal.poses.append(self.goal_pose_)
+            goal.positions.append(self.goal_position_)
+            goal.yaws.append(self.goal_yaw_)
             self.client_.send_goal(goal)
             result.success = True
-
-        self.as_.set_succeeded(result)
+            self.as_.set_succeeded(result)
 
     def getLocalizing(self):
         print('localizing')
@@ -192,8 +197,8 @@ class PathPlanner(object):
         # or the farthest point is the opposite of the closest point
         positions = []
         yaws = []
-        N = 10  # the number of key points on the trajectory
-        step = 0.8*np.pi/(N-1)
+        N = 15  # the number of key points on the trajectory
+        step = 2*np.pi/(N-1)
         yaw_cp = np.arctan2(-dir_cp[1], -dir_cp[0])
         for i in range(N):
             dir_i = self.rotateDirection(dir_cp, step*i)
@@ -208,8 +213,98 @@ class PathPlanner(object):
 
     def getMapping(self):
         print('mapping')
-        rospy.sleep(5)
+        # get target position
+        marker_position = np.asarray((self.marker_.pose.position.x, self.marker_.pose.position.y, self.marker_.pose.position.z))
+        # get target points
+        points = np.asarray([(p.x, p.y, p.z) for p in self.marker_.points])
+        # approximate points with a pillar
+        pillar_radius = np.linalg.norm(points[:, :2] - marker_position[:2], axis=1).max()  # the radius can also be defined by Gaussian sigma distance
+        pillar_top = points[:, 2].max()
+        pillar_bottom = points[:, 2].min() + pillar_radius * np.tan(self.alpha)
+
+        """
+        # get target height (not real height, it's eigenvalue of the vertical vector)
+        marker_q = (self.marker_.pose.orientation.x, self.marker_.pose.orientation.y, self.marker_.pose.orientation.z,
+                    self.marker_.pose.orientation.w)
+        marker_rot = tf.transformations.quaternion_matrix(marker_q)
+        height = (marker_rot[:, 0] * self.marker_.scale.x)[2]
+        """
+        # map plan: sweep from bottom to top
+        ## get circular planes
+        dist = 1.5  # distance to keep between drone and the closest pillar surface
+        half_vfov = 20. / 180 * np.pi
+        h1 = dist * np.tan(self.alpha + half_vfov)
+        h2 = dist * np.tan(self.alpha - half_vfov)
+        d = h1 + h2
+        N = int(np.ceil((pillar_top - pillar_bottom) / d))  # number of sweeping planes
+        heights = [pillar_bottom + d * i + h1 - 1 for i in range(N)]
+        n = 15  # number of waypoints on a circular path
+        radius = pillar_radius + dist
+
+        ## get start position
+        drone_position = np.asarray((self.current_pose_.pose.position.x, self.current_pose_.pose.position.y,
+                                     self.marker_.pose.position.z))
+        dir_cp = drone_position - marker_position
+        dir_cp = dir_cp/np.linalg.norm(dir_cp)
+        ## get path points
+        positions = []
+        yaws = []
+        for i in range(N):
+            center = np.asarray((marker_position[0], marker_position[1], heights[i]))
+            p, y = self.circularPoints(dir_cp, center, radius, n)
+            positions.append(p)
+            yaws.append(y)
+
+        positions = np.asarray(positions).reshape(-1, 3)
+        yaws = np.asarray(yaws).reshape(-1, 1)
+
+        start_p = positions[0]
+        start_y = yaws[0]
+        point = Point(start_p[0], start_p[1], start_p[2])
+        goal = uav_motion.msg.waypointsGoal()
+        goal.positions.append(point)
+        goal.yaws.append(start_y)
+        self.client_.send_goal(goal)
+        while True & (not rospy.is_shutdown()):
+            rospy.sleep(1.)
+            current_p = np.asarray((self.current_pose_.pose.position.x,
+                                    self.current_pose_.pose.position.y,
+                                    self.current_pose_.pose.position.z))
+
+            dist = np.linalg.norm(start_p - current_p)
+            if dist < 0.2:
+                break
+        self.mapping = True
+
+        self.sendWaypoints(positions[1:], yaws[1:])
+        last_p = positions[-1]
+        while True & (not rospy.is_shutdown()):
+            rospy.sleep(1.)
+            current_p = np.asarray((self.current_pose_.pose.position.x,
+                                    self.current_pose_.pose.position.y,
+                                    self.current_pose_.pose.position.z))
+
+            dist = np.linalg.norm(last_p - current_p)
+            if dist < 0.2:
+                break
+        self.mapping = False
         return True
+
+    def circularPoints(self, dir_cp, center, radius, n):
+        positions = []
+        yaws = []
+        step = 2 * np.pi / n
+        yaw_cp = np.arctan2(-dir_cp[1], -dir_cp[0])
+        for i in range(n):
+            dir_i = self.rotateDirection(dir_cp, step * i)
+            pos = center + dir_i * radius
+            # yaw = np.arctan2(-dir_i[1], -dir_i[0])  # this will cause some issues because atan2 is not continuous
+            yaw = yaw_cp + step * i
+            positions.append(pos)
+            yaws.append(yaw)
+        return positions, yaws
+
+
 
     def rotateDirection(self, d, theta):
         r = np.array(((np.cos(theta), -np.sin(theta), 0),
@@ -222,16 +317,9 @@ class PathPlanner(object):
         for i in range(len(yaws)):
             p = positions[i]
             yaw = yaws[i]
-            q = quaternion_from_euler(0, 0, yaw)
-            pose = Pose()
-            pose.position.x = float(p[0])
-            pose.position.y = float(p[1])
-            pose.position.z = float(p[2])
-            pose.orientation.x = q[0]
-            pose.orientation.y = q[1]
-            pose.orientation.z = q[2]
-            pose.orientation.w = q[3]
-            goal.poses.append(pose)
+            point = Point(p[0], p[1], p[2])
+            goal.positions.append(point)
+            goal.yaws.append(yaw)
         self.client_.send_goal(goal)
 
 

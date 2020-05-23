@@ -15,6 +15,8 @@ from sensor_msgs.msg import Image
 from sensor_msgs.msg import CameraInfo
 from image_geometry import PinholeCameraModel
 from geometry_msgs.msg import PoseStamped, TwistStamped
+from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Point
 import message_filters
 from cv_bridge import CvBridge, CvBridgeError
 import numpy as np
@@ -29,15 +31,15 @@ import std_msgs.msg
 import scipy.stats as stats
 from visualization_msgs.msg import Marker, MarkerArray
 import visualization_msgs
-from geometry_msgs.msg import Point
 import PyKDL
 import target_mapping.msg
 import actionlib
+from threading import Thread
 
 ROS_BAG = True
 
 class TargetTracker(object):
-    def __init__(self, particle_nm=500, z_range=(0.2, 10), a=0.5):
+    def __init__(self, particle_nm=1000, z_range=(3, 12), a=0.5):
         self.nm = particle_nm
         self.a = a  # https://github.com/ZhiangChen/target_mapping/wiki/Target-Localization-and-Body-Estimation-by-3D-Points
         self.w = []
@@ -51,16 +53,27 @@ class TargetTracker(object):
         self.KL_D = []  # KL divergence
         self.DE = []  # differential entropy
         self.status = 0  # 0: searching; 1: localizing; 2: mapping
+        self.bboxes = []
+        self.pose = Pose()
+        self.pose_ = Pose()
+        self.observation = False
+        self.eigens = []
+
+        self.noise_z = 0.05
+        self.noise_xy = 0.01
 
         self.pub_markers = rospy.Publisher("/target_localizer/ellipsoids", MarkerArray, queue_size=1)
         self.client = actionlib.SimpleActionClient("/path_planner/target_plan", target_mapping.msg.TargetPlanAction)
         #self.client.wait_for_server()
 
-        self.publish_image = True
+
+
+        self.publish_image = False
         if self.publish_image:
             self.bridge = CvBridge()
             self.pub = rospy.Publisher("/target_localizer/detection_image", Image, queue_size=1)
-            raw_image_sub = rospy.Subscriber('/bbox_tracker/detection_image', Image, self.image_callback, queue_size=1)
+            #raw_image_sub = rospy.Subscriber('/bbox_tracker/detection_image', Image, self.image_callback, queue_size=1)
+            raw_image_sub = rospy.Subscriber('/darknet_ros/detection_image', Image, self.image_callback, queue_size=1)
             self.img = np.zeros(1)
 
         if not ROS_BAG:
@@ -69,7 +82,7 @@ class TargetTracker(object):
             while not rospy.is_shutdown():
                 try:
                     now = rospy.Time.now()
-                    listener.waitForTransform("base_link", "r200", now, rospy.Duration(4.0))
+                    listener.waitForTransform("base_link", "r200", now, rospy.Duration(5.0))
                     (trans, rot) = listener.lookupTransform("base_link", "r200", now)
                 except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
                     continue
@@ -81,28 +94,36 @@ class TargetTracker(object):
 
         self.T_camera2base = np.matmul(trans, rot)
 
+
         self.pcl_pub = rospy.Publisher("/target_localizer/points", PointCloud2, queue_size=10)
 
-        camera_info = rospy.wait_for_message("/r200/depth/camera_info", CameraInfo)
+        camera_info = rospy.wait_for_message("/r200/rgb/camera_info", CameraInfo)
 
         self.pinhole_camera_model = PinholeCameraModel()
         self.pinhole_camera_model.fromCameraInfo(camera_info)
 
         self.image_W, self.image_H = self.pinhole_camera_model.fullResolution()
 
-        self.sub_bbox = message_filters.Subscriber('/bbox_tracker/bounding_boxes', BoundingBoxes)
+        #self.sub_bbox = message_filters.Subscriber('/bbox_tracker/bounding_boxes', BoundingBoxes)
+        self.sub_bbox = message_filters.Subscriber('/darknet_ros/bounding_boxes', BoundingBoxes)
         self.sub_pose = message_filters.Subscriber('/mavros/local_position/pose', PoseStamped)
         # self.sub_vel = message_filters.Subscriber('/mavros/local_position/velocity_local', TwistStamped)
+        self.timer = rospy.Timer(rospy.Duration(.5), self.timerCallback)
 
         self.ts = message_filters.ApproximateTimeSynchronizer([self.sub_bbox, self.sub_pose], queue_size=100, slop=0.1)
         # self.ts = message_filters.TimeSynchronizer([self.sub_bbox, self.sub_pose, self.sub_vel], 10)
         self.ts.registerCallback(self.callback)
+
+        #self.tracking_thread = Thread(target=self.localizing, args=())
+        #self.tracking_thread.daemon = True
+        #self.tracking_thread.start()
+
         print("target_localizer initialized!")
 
     def callback(self, bbox_msg, pose_msg):
         pose = pose_msg.pose
         bboxes = bbox_msg.bounding_boxes
-
+        self.observation = True
         for i, bbox in enumerate(bboxes):
             if not self.checkBBoxOnEdge(bbox):
                 cone = self.reprojectBBoxesCone(bbox)
@@ -111,14 +132,30 @@ class TargetTracker(object):
                     if self.status == 0:
                         self.generatePoints(cone, pose, self.nm)
                 else:
-                    #self.updatePoints(ids, cone, pose)
+                    # self.updatePoints(ids, cone, pose)
                     self.updatePointsDF(ids, bbox, pose)
 
-        print("target #: %d" % len(self.target_points))
+        #print("target #: %d" % len(self.target_points))
         self.computeTargetsVariance()
         self.publishTargetPoints()
-        self.updateTargets(pose)
+        self.updateTargets()
         self.localizeTarget(pose)
+        self.observation = False
+
+
+
+    def timerCallback(self, timer):
+        if not self.observation:
+            self.computeTargetsVariance()
+            self.updateTargets()
+            self.publishTargetPoints()
+            for id in range(len(self.target_points)):
+                kld = self.KL_D[id]
+                de = self.DE[id]
+                eigen = self.eigens[id]
+                print('--')
+                print(de)
+                print(eigen.max())
 
     def checkBBoxOnEdge(self, bbox, p=20):
         x1 = bbox.xmin
@@ -136,15 +173,15 @@ class TargetTracker(object):
 
         return False
 
-    def reprojectBBoxesCone(self, bbox):
+    def reprojectBBoxesCone(self, bbox, p=20):
         """
         :param bbox:
         :return: cone = np.asarray((ray1, ray2, ray3, ray4))
         """
-        x1 = bbox.xmin - 10
-        y1 = bbox.ymin - 10
-        x2 = bbox.xmax + 10
-        y2 = bbox.ymax + 10
+        x1 = bbox.xmin - p
+        y1 = bbox.ymin - p
+        x2 = bbox.xmax + p
+        y2 = bbox.ymax + p
         #  ray1  ray2
         #  ray3  ray4
         #  see the camera coordinate system: https://github.com/ZhiangChen/target_mapping
@@ -219,6 +256,7 @@ class TargetTracker(object):
         self.DE.append(-1)
         self.localized.append(False)
         self.mapped.append(False)
+        self.eigens.append(np.ones(3))
 
     def updatePoints(self, ids, cone, pose):
         # return information gain
@@ -265,7 +303,7 @@ class TargetTracker(object):
 
             self.target_points[id] = new_points_w
 
-    def updatePointsDF(self, ids, bbox, pose, epsilon=0.):
+    def updatePointsDF(self, ids, bbox, pose, p=20,epsilon=0.):
         # update points using depth filter
         T_base2world = self.getTransformFromPose(pose)
         T_camera2world = np.matmul(T_base2world, self.T_camera2base)
@@ -278,9 +316,9 @@ class TargetTracker(object):
             old_points = copy.deepcopy(points)
             #w = np.random.normal(size=(self.nm, 3)) * self.w[id]
             #self.w[id] = self.w[id] * 0.9 + 0.001
-            w = np.random.normal(size=(self.nm, 2)) * 0.05
+            w = np.random.normal(size=(self.nm, 2)) * self.noise_xy
             points[:, :2] = points[:, :2] + w
-            w = np.random.normal(size=self.nm) * 0.02
+            w = np.random.normal(size=self.nm) * self.noise_z
             points[:, 2] = points[:, 2] + w
             points_w = np.insert(points, 3, 1, axis=1).transpose()
             points_c = np.matmul(T_world2camera, points_w)
@@ -288,10 +326,10 @@ class TargetTracker(object):
             points_c = points_c.transpose()
             x = map(self.pinhole_camera_model.project3dToPixel, points_c)
             x = np.asarray(x)
-            xmin = bbox.xmin - 10
-            xmax = bbox.xmax + 10
-            ymin = bbox.ymin - 10
-            ymax = bbox.ymax + 10
+            xmin = bbox.xmin - p
+            xmax = bbox.xmax + p
+            ymin = bbox.ymin - p
+            ymax = bbox.ymax + p
             u = np.all(np.asarray((xmin <= x[:, 0], x[:, 0] <= xmax)), axis=0)
             v = np.all(np.asarray((ymin <= x[:, 1], x[:, 1] <= ymax)), axis=0)
             x_inbbox_bool = np.all(np.asarray((u, v)), axis=0)
@@ -321,66 +359,76 @@ class TargetTracker(object):
             self.KL_D[id] = kld
             self.DE[id] = de
 
-    def updateTargets(self, pose):
-        T_base2world = self.getTransformFromPose(pose)
-        T_camera2world = np.matmul(T_base2world, self.T_camera2base)
-        T_world2camera = inv(T_camera2world)
-        for id in range(len(self.target_points)):
+    def updateTargets(self, p=20):
+        for id in reversed(range(len(self.target_points))):
             # no update when a target is already localized
             if self.localized[id]:
                 continue
             # no update when a target is not on current image
             points = self.target_points[id]
             old_points = copy.deepcopy(points)
+            """
             points_w = np.insert(points, 3, 1, axis=1).transpose()
             points_c = np.matmul(T_world2camera, points_w)
             points_c = points_c[:3, :]
             points_c = points_c.transpose()
             x = map(self.pinhole_camera_model.project3dToPixel, points_c)
             x = np.asarray(x)
-            u = np.all(np.asarray((0 <= x[:, 0], x[:, 0] <= self.image_W)), axis=0)
-            v = np.all(np.asarray((0 <= x[:, 1], x[:, 1] <= self.image_H)), axis=0)
+            u = np.all(np.asarray((p <= x[:, 0], x[:, 0] <= (self.image_W - p))), axis=0)
+            v = np.all(np.asarray((p <= x[:, 1], x[:, 1] <= (self.image_H - p))), axis=0)
             x_inImage_bool = np.all(np.asarray((u, v)), axis=0)
             if np.sum(x_inImage_bool) > 0:
-                w = np.random.normal(size=(self.nm, 2)) * 0.1
+                w = np.random.normal(size=(self.nm, 2)) * 0.01
                 points[:, :2] = points[:, :2] + w
-                w = np.random.normal(size=self.nm) * 0.1
+                w = np.random.normal(size=self.nm) * 0.01
                 points[:, 2] = points[:, 2] + w
+            """
+            w = np.random.normal(size=(self.nm, 2)) * self.noise_xy
+            points[:, :2] = points[:, :2] + w
+            w = np.random.normal(size=self.nm) * self.noise_z
+            points[:, 2] = points[:, 2] + w
             self.target_points[id] = points
             kld, de = self.measurePoints(old_points, points)
             # only update differential entropy; for KL-divergence, we only care about ones from observation
             self.DE[id] = de
-            print(de)
             if id != self.searching_id:
-                pass
-
+                if de > 3.:
+                    print('false detection')
+                    self.deregisterTarget(id)
 
     def localizeTarget(self, pose):
         if len(self.target_points) <= self.searching_id:
             return
         kld = self.KL_D[self.searching_id]
         de = self.DE[self.searching_id]
+        eigen = self.eigens[self.searching_id]
         if kld == -1:
             return
 
+        print('--')
+        print(de)
+        print(eigen.max())
         # start localization
-        if self.status == 0:
+        if (self.status == 0) & (de < 2.0) & (eigen.max() < 3):
             self.requestLocalizing()
             return
 
-        # check if new localization planning is needed
-        if (not self.checkPointsInImage(pose)) & (self.status == 1):
-            self.requestLocalizing()
 
-        # deregister when differential entropy is too small or too large
-
+        # false detection
+        if de > 3.:
+            print('false detection')
+            self.deregisterTarget(self.searching_id)
+            if self.status != 0:
+                self.continueSearch()
 
         # confirm localization when KL divergence is too small
-        if (kld < 5) & (self.status == 1):
+        if (de < -2.2) & (kld < 0.05) & (self.status == 1):
+            print('localized')
             self.localized[self.searching_id] = True
             # start mapping
             result = self.requestMapping()
-            rospy.sleep(20)  # fake mapping
+            if result:
+                print('mapped')
             self.mapped[self.searching_id] = result
             self.searching_id += 1
             self.continueSearch()
@@ -426,9 +474,12 @@ class TargetTracker(object):
         goal.markers = self.markers
         self.client.send_goal(goal)
         self.status = 2
-        return True
+        rospy.sleep(5.)
+        self.client.wait_for_result()
+        return self.client.get_result()
 
     def continueSearch(self):
+        print('resuming searching')
         goal = target_mapping.msg.TargetPlanGoal()
         goal.header.stamp = rospy.Time.now()
         goal.id.data = self.searching_id
@@ -461,14 +512,15 @@ class TargetTracker(object):
             eigz_n.Normalize()
             rot = PyKDL.Rotation(eigx_n, eigy_n, eigz_n)
             quat = rot.GetQuaternion()
-            marker = self.markerVector(id*3, w*10, v, center, quat)
+            marker = self.markerVector(id*3, w*10, v, center, quat, pts)
             markerArray.markers.append(marker)
+            self.eigens[id] = w
 
         if len(self.target_points) > 0:
             self.pub_markers.publish(markerArray)
             self.markers = copy.deepcopy(markerArray)
 
-    def markerVector(self, id, scale, rotation, position, quaternion):
+    def markerVector(self, id, scale, rotation, position, quaternion, pts):
         marker = Marker()
         marker.header.frame_id = "map"
         marker.header.stamp = rospy.Time.now()
@@ -495,6 +547,8 @@ class TargetTracker(object):
         marker.pose.orientation.y = quaternion[1]
         marker.pose.orientation.z = quaternion[2]
         marker.pose.orientation.w = quaternion[3]
+        points = [Point(p[0], p[1], p[2]) for p in pts]
+        marker.points = points
         return marker
 
     def getTransformFromPose(self, pose):
@@ -505,17 +559,17 @@ class TargetTracker(object):
 
     def publishTargetPoints(self):
         # convert target_points to pointcloud messages
-        all_points = []
-        for points in self.target_points:
-            print(points.shape)
-            all_points = all_points + points.tolist()
-            
-        header = std_msgs.msg.Header()
-        header.stamp = rospy.Time.now()
-        header.frame_id = 'map'
-        # create pcl from points
-        pc_msg = pcl2.create_cloud_xyz32(header, all_points)
-        self.pcl_pub.publish(pc_msg)
+        if len(self.target_points) > 0:
+            all_points = []
+            for points in self.target_points:
+                all_points = all_points + points.tolist()
+
+            header = std_msgs.msg.Header()
+            header.stamp = rospy.Time.now()
+            header.frame_id = 'map'
+            # create pcl from points
+            pc_msg = pcl2.create_cloud_xyz32(header, all_points)
+            self.pcl_pub.publish(pc_msg)
 
     def measurePoints(self, old_points, points):
         p0 = copy.deepcopy(old_points)
@@ -533,6 +587,7 @@ class TargetTracker(object):
         return kld, de
 
     def deregisterTarget(self, id):
+        id = int(id)
         del self.w[id]
         del self.target_points[id]
         del self.localized[id]
@@ -540,6 +595,7 @@ class TargetTracker(object):
         #self.markers = MarkerArray()
         del self.KL_D[id]
         del self.DE[id]
+        del self.eigens[id]
 
 if __name__ == '__main__':
     rospy.init_node('target_localizer', anonymous=False)

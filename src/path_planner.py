@@ -21,6 +21,8 @@ from threading import Thread
 import target_mapping.msg
 import tf
 from sensor_msgs.msg import Image
+from sensor_msgs.msg import PointCloud2
+from rtabmap_ros.srv import ResetPose, ResetPoseRequest
 
 class PathPlanner(object):
     def __init__(self):
@@ -34,6 +36,7 @@ class PathPlanner(object):
         self.plan_mode_ = 0
         self.alpha = 45./180*np.pi  # camera angle
         self.mapping = False
+        self.pc_map_ = PointCloud2()
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
@@ -49,14 +52,26 @@ class PathPlanner(object):
         #self.plan_thread_.daemon = True
         #self.plan_thread_.start()
 
-        self.mapper_pub = rospy.Publisher("/image_raw", Image, queue_size=1)
-        raw_image_sub = rospy.Subscriber('/r200/rgb/image_raw', Image, self.mapperCallback, queue_size=1)
+
+        self.resumeMap_srv_client_ = rospy.ServiceProxy('/rtabmap/resume', Empty)
+        self.pauseMap_srv_client_ = rospy.ServiceProxy('/rtabmap/pause', Empty)
+        self.newMap_srv_client_ = rospy.ServiceProxy('/rtabmap/trigger_new_map', Empty)
+        self.deleteMap_srv_client_ = rospy.ServiceProxy('/rtabmap/reset', Empty)
+        self.setPose_srv_client_ = rospy.ServiceProxy('/rtabmap/reset_odom_to_pose', ResetPose)
+        rospy.wait_for_service('/rtabmap/resume')
+        rospy.wait_for_service('/rtabmap/pause')
+        rospy.wait_for_service('/rtabmap/trigger_new_map')
+        #self.newMap_srv_client_()
+        self.deleteMap_srv_client_()
+        self.pauseMap_srv_client_()
+
+        map_sub_ = rospy.Subscriber('/rtabmap/cloud_map', PointCloud2, self.pointcloudCallback, queue_size=1)
 
         rospy.loginfo("Path planner has been initialized!")
 
 
     def startSearch(self):
-        positions = np.asarray(((0, 0, 5),  (-6, -6, 5)))
+        positions = np.asarray(((0, 0, 5), (-15, -15, 5), (0, 0, 5)))
         yaws = self.getHeads(positions)
         assert positions.shape[0] == len(yaws)
 
@@ -107,9 +122,10 @@ class PathPlanner(object):
     def poseCallback(self, pose):
         self.current_pose_ = pose
 
-    def mapperCallback(self, image):
+    def pointcloudCallback(self, pc_msg):
         if self.mapping:
-            self.mapper_pub.publish(image)
+            self.pc_map_ = pc_msg
+            #xyz = ros_numpy.point_cloud2.pointcloud2_to_xyz_array(pc_msg)
 
     def targetPlanCallback(self, target_plan):
         if (self.plan_mode_ == 0) & (target_plan.mode.data != 0):
@@ -197,8 +213,8 @@ class PathPlanner(object):
         # or the farthest point is the opposite of the closest point
         positions = []
         yaws = []
-        N = 15  # the number of key points on the trajectory
-        step = 2*np.pi/(N-1)
+        N = 25  # the number of key points on the trajectory
+        step = 4*np.pi/(N-1)
         yaw_cp = np.arctan2(-dir_cp[1], -dir_cp[0])
         for i in range(N):
             dir_i = self.rotateDirection(dir_cp, step*i)
@@ -274,7 +290,22 @@ class PathPlanner(object):
             dist = np.linalg.norm(start_p - current_p)
             if dist < 0.2:
                 break
+        rospy.sleep(2.)
+        """
+        pose = ResetPoseRequest()
+        pose.x = self.current_pose_.pose.position.x
+        pose.y = self.current_pose_.pose.position.y
+        pose.z = self.current_pose_.pose.position.z
+        q = self.current_pose_.pose.orientation
+
+        euler = euler_from_quaternion((q.x, q.y, q.z, q.w))
+        pose.roll = euler[0]
+        pose.pitch = euler[1]
+        pose.yaw = euler[2]
+        #self.setPose_srv_client_(pose)
+        """
         self.mapping = True
+        self.resumeMap_srv_client_()
 
         self.sendWaypoints(positions[1:], yaws[1:])
         last_p = positions[-1]
@@ -288,6 +319,10 @@ class PathPlanner(object):
             if dist < 0.2:
                 break
         self.mapping = False
+        self.newMap_srv_client_()
+        self.deleteMap_srv_client_()
+        self.pauseMap_srv_client_()
+
         return True
 
     def circularPoints(self, dir_cp, center, radius, n):

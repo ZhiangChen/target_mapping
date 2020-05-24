@@ -35,6 +35,7 @@ import PyKDL
 import target_mapping.msg
 import actionlib
 from threading import Thread
+import ros_numpy
 
 ROS_BAG = True
 
@@ -96,6 +97,7 @@ class TargetTracker(object):
 
 
         self.pcl_pub = rospy.Publisher("/target_localizer/points", PointCloud2, queue_size=10)
+        #self.map_pub = rospy.Publisher("/target_localizer/pc_map", PointCloud2, queue_size=10)
 
         camera_info = rospy.wait_for_message("/r200/rgb/camera_info", CameraInfo)
 
@@ -109,6 +111,7 @@ class TargetTracker(object):
         self.sub_pose = message_filters.Subscriber('/mavros/local_position/pose', PoseStamped)
         # self.sub_vel = message_filters.Subscriber('/mavros/local_position/velocity_local', TwistStamped)
         self.timer = rospy.Timer(rospy.Duration(.5), self.timerCallback)
+
 
         self.ts = message_filters.ApproximateTimeSynchronizer([self.sub_bbox, self.sub_pose], queue_size=100, slop=0.1)
         # self.ts = message_filters.TimeSynchronizer([self.sub_bbox, self.sub_pose, self.sub_vel], 10)
@@ -156,6 +159,8 @@ class TargetTracker(object):
                 print('--')
                 print(de)
                 print(eigen.max())
+
+
 
     def checkBBoxOnEdge(self, bbox, p=20):
         x1 = bbox.xmin
@@ -405,9 +410,10 @@ class TargetTracker(object):
         if kld == -1:
             return
 
-        print('--')
-        print(de)
-        print(eigen.max())
+        if self.status == 1:
+            print('--')
+            print(de)
+            print(eigen.max())
         # start localization
         if (self.status == 0) & (de < 2.0) & (eigen.max() < 3):
             self.requestLocalizing()
@@ -476,7 +482,8 @@ class TargetTracker(object):
         self.status = 2
         rospy.sleep(5.)
         self.client.wait_for_result()
-        return self.client.get_result()
+        result = self.client.get_result()
+        return result.success
 
     def continueSearch(self):
         print('resuming searching')

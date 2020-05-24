@@ -5,5 +5,6 @@ geometry_msgs/Pose camera_pose
 visualization_msgs/MarkerArray markers
 ---
 bool success
+sensor_msgs/PointCloud2 pointcloud_map
 ---
 float64 feedback

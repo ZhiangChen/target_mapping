@@ -15,6 +15,7 @@ actionlib_msgs
 message_generation
 std_msgs
 visualization_msgs
+sensor_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -75,6 +76,7 @@ visualization_msgs
    std_msgs  # Or other packages containing msgs
    visualization_msgs
    actionlib_msgs
+   sensor_msgs
  )
 
 ################################################

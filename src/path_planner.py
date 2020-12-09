@@ -9,6 +9,7 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Point
 from std_msgs.msg import Int8
+from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker, MarkerArray
 import uav_motion.msg
 import actionlib
@@ -37,6 +38,10 @@ class PathPlanner(object):
         self.alpha = 45./180*np.pi  # camera angle
         self.mapping = False
         self.pc_map_ = PointCloud2()
+        self.path = Path()
+        self.path.header.frame_id = 'map'
+        self.local_path_pub = rospy.Publisher("/local_path", Path, queue_size=1)
+        self.poses = []
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
@@ -47,6 +52,8 @@ class PathPlanner(object):
                                              queue_size=1)
         self.client_ = actionlib.SimpleActionClient('waypoints', uav_motion.msg.waypointsAction)
         self.client_.wait_for_server()
+
+
 
         #self.plan_thread_ = Thread(target=self.targetPlan, args=())
         #self.plan_thread_.daemon = True
@@ -71,7 +78,8 @@ class PathPlanner(object):
 
 
     def startSearch(self):
-        positions = np.asarray(((0, 0, 5), (-15, -15, 5), (0, 0, 5)))
+        #positions = np.asarray(((0, 0, 10), (-18, 0, 10), (0, 0, 6)))
+        positions = np.asarray(((0, 0, 6), (-6, -6, 10), (0, 0, 5)))
         yaws = self.getHeads(positions)
         assert positions.shape[0] == len(yaws)
 
@@ -121,6 +129,10 @@ class PathPlanner(object):
 
     def poseCallback(self, pose):
         self.current_pose_ = pose
+        self.poses.append(pose)
+        self.path.poses = self.poses
+        self.local_path_pub.publish(self.path)
+
 
     def pointcloudCallback(self, pc_msg):
         if self.mapping:

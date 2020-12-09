@@ -60,7 +60,7 @@ class TargetTracker(object):
         self.observation = False
         self.eigens = []
 
-        self.noise_z = 0.05
+        self.noise_z = 0.025
         self.noise_xy = 0.01
 
         self.pub_markers = rospy.Publisher("/target_localizer/ellipsoids", MarkerArray, queue_size=1)
@@ -145,8 +145,6 @@ class TargetTracker(object):
         self.localizeTarget(pose)
         self.observation = False
 
-
-
     def timerCallback(self, timer):
         if not self.observation:
             self.computeTargetsVariance()
@@ -159,8 +157,6 @@ class TargetTracker(object):
                 print('--')
                 print(de)
                 print(eigen.max())
-
-
 
     def checkBBoxOnEdge(self, bbox, p=20):
         x1 = bbox.xmin
@@ -308,7 +304,7 @@ class TargetTracker(object):
 
             self.target_points[id] = new_points_w
 
-    def updatePointsDF(self, ids, bbox, pose, p=20,epsilon=0.):
+    def updatePointsDF(self, ids, bbox, pose, p=20, epsilon=0.):
         # update points using depth filter
         T_base2world = self.getTransformFromPose(pose)
         T_camera2world = np.matmul(T_base2world, self.T_camera2base)
@@ -359,8 +355,9 @@ class TargetTracker(object):
             resample_ids = np.searchsorted(acc_W, u_samples)
             new_points = np.take(points, resample_ids, axis=0)
 
-            self.target_points[id] = new_points
             kld, de = self.measurePoints(old_points, new_points)
+
+            self.target_points[id] = new_points
             self.KL_D[id] = kld
             self.DE[id] = de
 
@@ -397,7 +394,7 @@ class TargetTracker(object):
             # only update differential entropy; for KL-divergence, we only care about ones from observation
             self.DE[id] = de
             if id != self.searching_id:
-                if de > 3.:
+                if de > 4.:
                     print('false detection')
                     self.deregisterTarget(id)
 
@@ -410,25 +407,45 @@ class TargetTracker(object):
         if kld == -1:
             return
 
-        if self.status == 1:
-            print('--')
-            print(de)
-            print(eigen.max())
+        if de > 0.8:
+            print('resampling')
+            marker = self.markers.markers[self.searching_id]
+            marker_q = (marker.pose.orientation.x, marker.pose.orientation.y,
+                        marker.pose.orientation.z, marker.pose.orientation.w)
+            marker_rot = tf.transformations.quaternion_matrix(marker_q)
+            points = self.target_points[self.searching_id]
+            points = np.insert(points, 3, 1, axis=1).transpose()
+            points_rot = np.matmul(inv(marker_rot), points)
+            new_points = points_rot[:3, :].transpose()
+            x_max = new_points[:, 0].max()
+            x_min = new_points[:, 0].min()
+            x = np.random.rand(self.nm) * (x_max - x_min) + x_min
+            new_points[:, 0] = x
+            new_points = np.insert(new_points, 3, 1, axis=1).transpose()
+            new_points = np.matmul(marker_rot, new_points)
+            new_points = new_points[:3, :].transpose()
+            self.target_points[self.searching_id] = new_points
+
+
         # start localization
         if (self.status == 0) & (de < 2.0) & (eigen.max() < 3):
             self.requestLocalizing()
             return
 
+        #if self.status == 1:
+        #    print('--')
+        #    print(de)
+        #    print(eigen.max())
 
         # false detection
-        if de > 3.:
+        if de > 4.:
             print('false detection')
             self.deregisterTarget(self.searching_id)
             if self.status != 0:
                 self.continueSearch()
 
         # confirm localization when KL divergence is too small
-        if (de < -2.2) & (kld < 0.05) & (self.status == 1):
+        if (de < -1.9) & (kld < 0.05) & (self.status == 1):
             print('localized')
             self.localized[self.searching_id] = True
             # start mapping
@@ -439,7 +456,6 @@ class TargetTracker(object):
             self.searching_id += 1
             self.continueSearch()
             return
-
 
     def requestLocalizing(self):
         print('requesting localizing')

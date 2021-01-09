@@ -1,4 +1,4 @@
-
+<?xml version="1.0" encoding="UTF-8"?>
 <launch>
   <!-- Convenience launch file to launch odometry, rtabmap and rtabmapviz nodes at once -->
 
@@ -278,7 +278,9 @@
       <param name="queue_size"           type="int" value="$(arg queue_size)"/>
       <param name="scan_normal_k"        type="int" value="$(arg scan_normal_k)"/>
       <param name="landmark_linear_variance"   type="double" value="$(arg tag_linear_variance)"/>
-      <param name="landmark_angular_variance"  type="double" value="$(arg tag_angular_variance)"/>      
+      <param name="landmark_angular_variance"  type="double" value="$(arg tag_angular_variance)"/>
+	  <param name="Grid/CellSize" type="string" value="0.01"/>
+	  <param name="Grid/DepthDecimation" type="string" value="1"/>   
       
       <remap from="rgb/image"       to="$(arg rgb_topic_relay)"/>
       <remap from="depth/image"     to="$(arg depth_topic_relay)"/>

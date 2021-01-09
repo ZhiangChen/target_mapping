@@ -26,6 +26,8 @@ class BBoxTracker(object):
     def __init__(self):
         bbox_nn_sub = rospy.Subscriber('/darknet_ros/bounding_boxes', BoundingBoxes, self.bbox_nn_callback, queue_size=1)
         raw_image_sub = rospy.Subscriber('/r200/rgb/image_raw', Image, self.raw_image_callback, queue_size=1)
+        #raw_image_sub = rospy.Subscriber('/r200/depth/image_raw', Image, self.raw_image_callback, queue_size=1)
+        #raw_image_sub = rospy.Subscriber('/darknet_ros/detection_image', Image, self.raw_image_callback, queue_size=1)
 
         self.bridge = CvBridge()
         self.pub = rospy.Publisher("/bbox_tracker/detection_image", Image, queue_size=1)
@@ -40,6 +42,7 @@ class BBoxTracker(object):
         self.startXs = np.empty((20, 0), int)
         self.startYs = np.empty((20, 0), int)
         self.bboxes_klt = np.empty((0, 4, 2), float)
+        self.traces = []
 
         self.observation_done = False
 
@@ -84,6 +87,7 @@ class BBoxTracker(object):
                         bboxes_new = copy.deepcopy(self.bboxes_new)
                         X = copy.deepcopy(self.X)
                         Cov = copy.deepcopy(self.Cov)
+                        traces = copy.deepcopy(self.traces)
                         self.bboxes_new = []
                         # update image
                         self.image_old = copy.deepcopy(self.image_new)
@@ -98,8 +102,10 @@ class BBoxTracker(object):
                                 n_features_left = np.sum(startXs != -1)
                                 if n_features_left < 15:
                                     continue
+                                center_list = [(int((bbox_new.xmin + bbox_new.xmax) / 2.), int((bbox_new.ymin + bbox_new.ymax) / 2.))]
                                 X.append(bbox_new)
                                 Cov.append(self.Q)
+                                traces.append(center_list)
                                 self.startXs = np.append(self.startXs, startXs, axis=1)
                                 self.startYs = np.append(self.startYs, startYs, axis=1)
                                 self.bboxes_klt = np.append(self.bboxes_klt, bbox_klt, axis=0)
@@ -107,6 +113,8 @@ class BBoxTracker(object):
 
                             else:
                                 self.__updateObservation(bbox_new, idx, X, Cov)
+                                center = (int((bbox_new.xmin + bbox_new.xmax) / 2.), int((bbox_new.ymin + bbox_new.ymax) / 2.))
+                                traces[idx].append(center)
                                 self.observation_done = True
 
                         img = copy.deepcopy(self.image_old)
@@ -115,6 +123,7 @@ class BBoxTracker(object):
                         seconds = rospy.get_time() - seconds
                         self.X = copy.deepcopy(X)
                         self.Cov = copy.deepcopy(Cov)
+                        self.traces = copy.deepcopy(traces)
                         print("obs " + str(len(self.X)) + " " + str(seconds))
                         self.__publish_bbox()
 
@@ -198,10 +207,11 @@ class BBoxTracker(object):
             # deregistration 1: measure differential entropy to remove false positive detection
             cov = self.Cov[i]
             DE = 5.675754132818691 + np.log(det(cov))/2.0 # differential entropy for Multivariate normal distribution
-            #print('DE: ', DE)
-            if DE >= 16.:
+            print('DE: ', DE)
+            if DE >= 20.:  # it was 16.
                 del self.X[i]
                 del self.Cov[i]
+                del self.traces[i]
                 self.bboxes_klt = np.delete(self.bboxes_klt, i, 0)
                 self.startXs = np.delete(self.startXs, i, 1)
                 self.startYs = np.delete(self.startYs, i, 1)
@@ -210,6 +220,7 @@ class BBoxTracker(object):
             if (bbox.min() < 0) or (bbox[2, 0] > width) or (bbox[2, 1] > height):
                 del self.X[i]
                 del self.Cov[i]
+                del self.traces[i]
                 self.bboxes_klt = np.delete(self.bboxes_klt, i, 0)
                 self.startXs = np.delete(self.startXs, i, 1)
                 self.startYs = np.delete(self.startYs, i, 1)
@@ -220,6 +231,8 @@ class BBoxTracker(object):
                 self.X[i].ymin = bbox[0][1]
                 self.X[i].xmax = bbox[2][0]
                 self.X[i].ymax = bbox[2][1]
+                center = (int((self.X[i].xmin + self.X[i].xmax) / 2.), int((self.X[i].ymin + self.X[i].ymax) / 2.))
+                self.traces[i].append(center)
                 # generate new features if needed
                 n_features_left = np.sum(self.startXs[:, i] != -1)
                 if n_features_left < 15:
@@ -258,6 +271,25 @@ class BBoxTracker(object):
         Xs = copy.deepcopy(X)
         for x in Xs:
             image = cv2.rectangle(image, (int(x.xmin), int(x.ymin)), (int(x.xmax), int(x.ymax)), (0, 255, 255), 2)
+
+        N = len(self.traces)
+        for k in range(N):
+            trace = self.traces[k]
+            if len(trace) >= 200:
+                trace = trace[-200:]
+                self.traces[k] = trace
+            pts = copy.deepcopy(trace)
+            pts.reverse()
+            for i in range(1, len(pts)):
+                # if either of the tracked points are None, ignore them
+                if pts[i - 1] is None or pts[i] is None:
+                    continue
+                # otherwise, compute the thickness of the line and
+                # draw the connecting lines
+                buffer = 32
+                thickness = int(np.sqrt(buffer / float(i + 1)) * 2.5)
+                cv2.line(image, pts[i - 1], pts[i], (0, 255, 255), thickness)
+
         if Image_msg:
             image = self.bridge.cv2_to_imgmsg(image, 'rgb8')
         return image

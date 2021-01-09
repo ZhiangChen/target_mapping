@@ -106,8 +106,8 @@ class TargetTracker(object):
 
         self.image_W, self.image_H = self.pinhole_camera_model.fullResolution()
 
-        #self.sub_bbox = message_filters.Subscriber('/bbox_tracker/bounding_boxes', BoundingBoxes)
-        self.sub_bbox = message_filters.Subscriber('/darknet_ros/bounding_boxes', BoundingBoxes)
+        self.sub_bbox = message_filters.Subscriber('/bbox_tracker/bounding_boxes', BoundingBoxes)
+        #self.sub_bbox = message_filters.Subscriber('/darknet_ros/bounding_boxes', BoundingBoxes)
         self.sub_pose = message_filters.Subscriber('/mavros/local_position/pose', PoseStamped)
         # self.sub_vel = message_filters.Subscriber('/mavros/local_position/velocity_local', TwistStamped)
         self.timer = rospy.Timer(rospy.Duration(.5), self.timerCallback)

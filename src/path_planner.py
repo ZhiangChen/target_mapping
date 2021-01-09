@@ -80,6 +80,7 @@ class PathPlanner(object):
     def startSearch(self):
         #positions = np.asarray(((0, 0, 10), (-18, 0, 10), (0, 0, 6)))
         positions = np.asarray(((0, 0, 6), (-6, -6, 10), (0, 0, 5)))
+        positions = np.asarray(((0, 0, 5), (-15, -15, 5), (0, 0, 5)))
         yaws = self.getHeads(positions)
         assert positions.shape[0] == len(yaws)
 

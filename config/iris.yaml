@@ -1,0 +1,23 @@
+# we need transform from camera to ground, T_G_C
+# T_G_C = T_G_D * T_B_D_.inverse() * T_B_C_
+# C: camera; B: robot body; D: sensor dynamic coordinates; G: ground
+# if we define T_B_C_ as the following T_B_C, then T_B_D_ will be the transform between camera and robot body (camera external calibration).
+# T_G_D is the transform listened from the "transform" topic
+
+# actually T_R_C (C = cam0, R = rgbd cam)
+T_B_C:
+- [1.0, 0.0, 0.0, 0.0]
+- [0.0, 1.0, 0.0, 0.0]
+- [0.0, 0.0, 1.0, 0.0]
+- [0.0, 0.0, 0.0, 1.0]
+invert_T_B_C: false
+
+# actually T_V_C (C = cam0, V = vicon)
+T_B_D:
+- [0., -0.8191521, 0.5735765, 0.1]
+- [-1.0, 0., 0., 0.]
+- [0., -0.5735765, -0.8191521, -0.01]
+- [0.0, 0.0, 0.0, 1.0]
+invert_T_B_D: true
+# if invert_T_B_D: T_B_D = T_B_D.inverse()
+

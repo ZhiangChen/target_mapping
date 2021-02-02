@@ -24,6 +24,13 @@ import tf
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import PointCloud2
 from rtabmap_ros.srv import ResetPose, ResetPoseRequest
+from utils.open3d_ros_conversion import convertCloudFromRosToOpen3d
+import open3d as o3d
+import rospkg
+import os
+import time
+import matplotlib.pyplot as plt
+import visualization_msgs
 
 class PathPlanner(object):
     def __init__(self):
@@ -32,16 +39,24 @@ class PathPlanner(object):
         self.current_pose_.pose.orientation.w = 1
         self.saved_pose_ = PoseStamped()
         self.marker_ = Marker()
+        self.cylinder_marker_ = Marker()
+        self.got_cylinder_marker_ = False
         self.goal_position_ = Point()
         self.goal_yaw_ = 0
         self.plan_mode_ = 0
         self.alpha = 45./180*np.pi  # camera angle
         self.mapping = False
+        rp = rospkg.RosPack()
+        pkg_path = rp.get_path('target_mapping')
+        self.pcd_path = os.path.join(pkg_path, 'pcd')
+
         self.pc_map_ = PointCloud2()
         self.path = Path()
         self.path.header.frame_id = 'map'
         self.local_path_pub = rospy.Publisher("/local_path", Path, queue_size=1)
         self.poses = []
+
+        self.cylinder_marker_pub_ = rospy.Publisher('/path/planner/cylinder_marker', Marker, queue_size=2)
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
@@ -52,8 +67,6 @@ class PathPlanner(object):
                                              queue_size=1)
         self.client_ = actionlib.SimpleActionClient('waypoints', uav_motion.msg.waypointsAction)
         self.client_.wait_for_server()
-
-
 
         #self.plan_thread_ = Thread(target=self.targetPlan, args=())
         #self.plan_thread_.daemon = True
@@ -79,9 +92,12 @@ class PathPlanner(object):
 
     def startSearch(self):
         #positions = np.asarray(((0, 0, 10), (-18, 0, 10), (0, 0, 6)))
-        positions = np.asarray(((0, 0, 6), (-6, -6, 10), (0, 0, 5)))
-        positions = np.asarray(((0, 0, 5), (-15, -15, 5), (0, 0, 5)))
+        #positions = np.asarray(((0, 0, 6), (-6, -6, 10), (0, 0, 5)))
+        positions = np.asarray(((0, 0, 24), (-15, 10, 24), (1, 12, 24), (0, 0, 20)))
+        #positions = self.lawnmower(pt1=(-50, -35), pt2=(50, 35), origin=(30, 38), spacing=5, vertical=True) # pt1=(-50, -35)
+        #positions = self.add_height(positions, 17.)  # for blender_terrain, [10, 15]
         yaws = self.getHeads(positions)
+
         assert positions.shape[0] == len(yaws)
 
         for i in range(len(yaws)):
@@ -104,6 +120,9 @@ class PathPlanner(object):
                                         self.current_pose_.pose.position.y,
                                         self.current_pose_.pose.position.z))
                 dist = np.linalg.norm(goal_p - current_p)
+                if self.got_cylinder_marker_:
+                    self.cylinder_marker_pub_.publish(self.cylinder_marker_)
+
                 if dist < 0.2:
                     break
 
@@ -113,8 +132,6 @@ class PathPlanner(object):
             goal.yaws.append(yaws[i])
             self.client_.send_goal(goal)
             rospy.sleep(5.)
-
-
 
     def getHeads(self, waypoints):
         yaws = []
@@ -153,7 +170,6 @@ class PathPlanner(object):
         rospy.sleep(3.)
 
         result = target_mapping.msg.TargetPlanResult()
-
         if self.plan_mode_ == 1:
             result.success = self.getLocalizing()
             self.as_.set_succeeded(result)
@@ -251,6 +267,10 @@ class PathPlanner(object):
         pillar_top = points[:, 2].max()
         pillar_bottom = points[:, 2].min() + pillar_radius * np.tan(self.alpha)
 
+        cylinder_pos = marker_position
+        cylinder_scale = [pillar_radius*2, pillar_radius*2, pillar_top - points[:, 2].min()]
+        self.cylinder_marker_ = self.create_cylinder_marker(pos=cylinder_pos, scale=cylinder_scale)
+        self.got_cylinder_marker_ = True
         """
         # get target height (not real height, it's eigenvalue of the vertical vector)
         marker_q = (self.marker_.pose.orientation.x, self.marker_.pose.orientation.y, self.marker_.pose.orientation.z,
@@ -332,9 +352,16 @@ class PathPlanner(object):
             if dist < 0.2:
                 break
         self.mapping = False
+        # save pointcloud map
+        pc_map_msg = copy.copy(self.pc_map_)
+        o3d_pc = convertCloudFromRosToOpen3d(pc_map_msg)
+        pcd_name = os.path.join(self.pcd_path, str(self.id_) + ".pcd")
+        o3d.io.write_point_cloud(pcd_name, o3d_pc)
+
         self.newMap_srv_client_()
         self.deleteMap_srv_client_()
         self.pauseMap_srv_client_()
+        self.got_cylinder_marker_ = False
 
         return True
 
@@ -369,6 +396,90 @@ class PathPlanner(object):
             goal.positions.append(point)
             goal.yaws.append(yaw)
         self.client_.send_goal(goal)
+
+
+    def lawnmower(self, pt1, pt2, origin, spacing, vertical):
+        origin = np.array(origin)
+        pt1 = np.array(pt1) - origin
+        pt2 = np.array(pt2) - origin
+        x1, y1 = pt1
+        x2, y2 = pt2
+        width = x2 - x1
+        length = y2 - y1
+        waypoints = [np.array((0., 0.)), pt1]
+        if vertical:
+            N = int(width / spacing / 2)
+            for i in range(N):
+                pt_0 = waypoints[-1]
+                pt_1 = pt_0 + np.array((0, length))
+                pt_2 = pt_1 + np.array((spacing, 0))
+                pt_3 = pt_2 + np.array((0, -length))
+                pt_4 = pt_3 + np.array((spacing, 0))
+                waypoints.append(pt_1)
+                waypoints.append(pt_2)
+                waypoints.append(pt_3)
+                waypoints.append(pt_4)
+        else:
+            N = int(length / spacing / 2)
+            for i in range(N):
+                pt_0 = waypoints[-1]
+                pt_1 = pt_0 + np.array((width, 0))
+                pt_2 = pt_1 + np.array((0, spacing))
+                pt_3 = pt_2 + np.array((-width, 0))
+                pt_4 = pt_3 + np.array((0, spacing))
+                waypoints.append(pt_1)
+                waypoints.append(pt_2)
+                waypoints.append(pt_3)
+                waypoints.append(pt_4)
+        waypoints.append(pt2)
+        return np.array(waypoints)
+
+
+    def plot_path(self, waypoints):
+        waypoints = np.array(waypoints)
+        x = waypoints[:, 0]
+        y = waypoints[:, 1]
+        plt.plot(x, y)
+        plt.show()
+
+    def add_height(self, waypoints, height):
+        N = waypoints.shape[0]
+        new_waypoints = np.zeros((N, 3))
+        new_waypoints[:, :2] = waypoints
+        new_waypoints[:, 2] = height
+        return new_waypoints
+
+    def create_cylinder_marker(self, pos=[0, 0, 0], qua=[0, 0, 0, 1], scale=[1, 1, 1]):
+        """
+        :param pos: [x, y, z]
+        :param qua: [x, y, z, w]
+        :param scale: [diameter_x, diameter_y, height]; the first two params are diameters for an ellipse
+        :return:
+        """
+        marker = Marker()
+        marker.header.frame_id = "map"
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "target_mapping"
+        marker.id = 0
+        # marker.type = visualization_msgs.msg.Marker.MESH_RESOURCE
+        marker.type = visualization_msgs.msg.Marker.CYLINDER
+        # marker.mesh_resource = "package://gazebo_sim_models/models/granite_dell/granite_dell.dae"
+        marker.action = visualization_msgs.msg.Marker.ADD
+        marker.scale.x = scale[0]
+        marker.scale.y = scale[1]
+        marker.scale.z = scale[2]
+        marker.color.a = .5
+        marker.color.r = .5
+        marker.color.g = .5
+        marker.color.b = 0.
+        marker.pose.position.x = pos[0]
+        marker.pose.position.y = pos[1]
+        marker.pose.position.z = pos[2]
+        marker.pose.orientation.x = qua[0]
+        marker.pose.orientation.y = qua[1]
+        marker.pose.orientation.z = qua[2]
+        marker.pose.orientation.w = qua[3]
+        return marker
 
 
 

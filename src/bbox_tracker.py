@@ -208,7 +208,7 @@ class BBoxTracker(object):
             cov = self.Cov[i]
             DE = 5.675754132818691 + np.log(det(cov))/2.0 # differential entropy for Multivariate normal distribution
             print('DE: ', DE)
-            if DE >= 20.:  # it was 16.
+            if DE >= 16.:  # it was 16.
                 del self.X[i]
                 del self.Cov[i]
                 del self.traces[i]

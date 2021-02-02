@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<launch>
+	<include file="$(find darknet_ros)/launch/darknet_ros_pbr.launch" />
+
+	<node pkg="target_mapping" type="bbox_tracker.py" name="klt_tracker">
+		<!--remap from="/iou_tracker/bounding_boxes" to="/bbox_tracker/bounding_boxes" /-->
+	</node>
+</launch>

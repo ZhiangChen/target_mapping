@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<launch>
+	<include file="$(find darknet_ros)/launch/darknet_ros_granite_dell_pbr.launch" />
+
+	<node name="drop_detection" pkg="topic_tools" type="drop" args="/bbox_tracker/bounding_boxes 2 3">
+	</node>
+
+	<node name="odom_tf_broadcaster" pkg="target_mapping" type="odom_tf_broadcast.py"/>
+
+	<node pkg="ros_iou_tracking" type="iou_tracker.py" name="iou_tracker">
+		<remap from="/iou_tracker/bounding_boxes" to="/bbox_tracker/bounding_boxes" />
+	</node>
+</launch>

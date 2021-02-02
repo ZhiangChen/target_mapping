@@ -26,7 +26,8 @@ from ctypes import *  # convert float to uint32
 import rospy
 from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud2, PointField
-import sensor_msgs.point_cloud2 as pc2
+#import sensor_msgs.point_cloud2 as pc2
+import pc2
 
 # The data structure of each point in ros PointCloud2: 16 bits = x + y + z + rgb
 FIELDS_XYZ = [
@@ -75,7 +76,7 @@ def convertCloudFromOpen3dToRos(open3d_cloud, frame_id="odom"):
 def convertCloudFromRosToOpen3d(ros_cloud):
     # Get cloud data from ros_cloud
     field_names = [field.name for field in ros_cloud.fields]
-    cloud_data = list(pc2.read_points(ros_cloud, skip_nans=True, field_names=field_names))
+    cloud_data = list(pc2.read_points(ros_cloud, skip_nans=False, field_names=field_names))
 
     # Check empty
     open3d_cloud = open3d.geometry.PointCloud()

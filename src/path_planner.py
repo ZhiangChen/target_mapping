@@ -44,7 +44,12 @@ class PathPlanner(object):
         self.goal_position_ = Point()
         self.goal_yaw_ = 0
         self.plan_mode_ = 0
-        self.alpha = 45./180*np.pi  # camera angle
+        self.alpha = 40./180*np.pi
+        # self.alpha is the camera angle, which is supposed to be 60 degrees according to the camera mount angle.
+        # However, if we set it as 60 degrees, the lower-bound scanning ray will be too long
+        # For example, alpha = 60 degrees, half FoV = 20 degrees, distance to keep is 1.5 meters.
+        # Then the vertical distance from the lower-bound scanning ray is 1.5*tan(60+20), which is 8.5 meters.
+        # The vertical distance from the upper-bound scanning ray is 1.5*tan(60-20), which is 1.3 meters.
         self.mapping = False
         rp = rospkg.RosPack()
         pkg_path = rp.get_path('target_mapping')
@@ -265,12 +270,13 @@ class PathPlanner(object):
         # approximate points with a pillar
         pillar_radius = np.linalg.norm(points[:, :2] - marker_position[:2], axis=1).max()  # the radius can also be defined by Gaussian sigma distance
         pillar_top = points[:, 2].max()
-        pillar_bottom = points[:, 2].min() + pillar_radius * np.tan(self.alpha)
+        pillar_bottom = points[:, 2].min() #+ pillar_radius * np.tan(self.alpha)
 
         cylinder_pos = marker_position
         cylinder_scale = [pillar_radius*2, pillar_radius*2, pillar_top - points[:, 2].min()]
         self.cylinder_marker_ = self.create_cylinder_marker(pos=cylinder_pos, scale=cylinder_scale)
         self.got_cylinder_marker_ = True
+        print(self.cylinder_marker_)
         """
         # get target height (not real height, it's eigenvalue of the vertical vector)
         marker_q = (self.marker_.pose.orientation.x, self.marker_.pose.orientation.y, self.marker_.pose.orientation.z,
@@ -284,11 +290,19 @@ class PathPlanner(object):
         half_vfov = 20. / 180 * np.pi
         h1 = dist * np.tan(self.alpha + half_vfov)
         h2 = dist * np.tan(self.alpha - half_vfov)
-        d = h1 + h2
-        N = int(np.ceil((pillar_top - pillar_bottom) / d))  # number of sweeping planes
-        heights = [pillar_bottom + d * i + h1 - 1 for i in range(N)]
+        d = h1 - h2
+        N = int(round(np.ceil((pillar_top - pillar_bottom) / d)))  # number of sweeping planes
+        heights = [pillar_bottom + d * i + h1 for i in range(N)]
         n = 15  # number of waypoints on a circular path
         radius = pillar_radius + dist
+
+        print(pillar_top)
+        print(pillar_bottom)
+        print(h1)
+        print(h2)
+        print(N)
+        print(heights)
+        print(radius)
 
         ## get start position
         drone_position = np.asarray((self.current_pose_.pose.position.x, self.current_pose_.pose.position.y,
@@ -469,9 +483,9 @@ class PathPlanner(object):
         marker.scale.y = scale[1]
         marker.scale.z = scale[2]
         marker.color.a = .5
-        marker.color.r = .5
-        marker.color.g = .5
-        marker.color.b = 0.
+        marker.color.r = 0.0
+        marker.color.g = 0.0
+        marker.color.b = 0.5
         marker.pose.position.x = pos[0]
         marker.pose.position.y = pos[1]
         marker.pose.position.z = pos[2]

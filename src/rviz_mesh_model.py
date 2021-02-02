@@ -71,9 +71,9 @@ def create_cylinder_marker(pos=[0,0,0], qua=[0,0,0,1], scale=[1,1,1]):
 if __name__ == '__main__':
     rospy.init_node('rviz_mesh_model', anonymous=False)
     pub = rospy.Publisher('mesh_model', Marker, queue_size=10)
-    r = rospy.Rate(.1)  # 10hz
+    r = rospy.Rate(0.1)  # .1hz
     while not rospy.is_shutdown():
-        #marker = create_mesh_marker()
-        marker = create_cylinder_marker(scale=[1, 1, 1])
+        marker = create_mesh_marker()
+        #marker = create_cylinder_marker(scale=[1, 1, 1])
         pub.publish(marker)
         r.sleep()

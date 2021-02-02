@@ -54,7 +54,7 @@ uav_status_dict = {'searching': 0,
 
 
 class TargetPoints(object):
-    def __init__(self, camera_model, T_camera2base, hit_updating_N=5, missed_hit_M=10):
+    def __init__(self, camera_model, T_camera2base, hit_updating_N=5, missed_hit_M=15):
         self.nm = 2000
         self.z_min = 3  # the range of particles along z axis in camera coord system
         self.z_max = 18
@@ -644,14 +644,14 @@ class TargetTracker(object):
             target = self.targets[self.searching_id]
             points_2d = target.points_2d
             img = self.draw_points(self.img, points_2d)
-            image_msg = self.bridge.cv2_to_imgmsg(img, 'rgb8')
+            image_msg = self.bridge.cv2_to_imgmsg(img, 'bgr8')
             self.pub.publish(image_msg)
             self.update_img = False
 
 
     def draw_points(self, image, pts):
         for pt in pts:
-            image = cv2.circle(image, (int(pt[0]), int(pt[1])), radius=2, color=(0, 0, 255), thickness=2)
+            image = cv2.circle(image, (int(pt[0]), int(pt[1])), radius=2, color=(255, 0, 0), thickness=2)
         return image
 
     def publishTargetMarkers(self):

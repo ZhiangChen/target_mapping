@@ -26,9 +26,9 @@ def create_mesh_marker():
     marker.color.r = .5
     marker.color.g = .5
     marker.color.b = 0.
-    marker.pose.position.x = 0.005115
+    marker.pose.position.x = 0.65  #0.005115
     marker.pose.position.y = -0.008963
-    marker.pose.position.z = -0.133592
+    marker.pose.position.z = -0.135 #-0.133592
     marker.pose.orientation.x = 0
     marker.pose.orientation.y = 0
     marker.pose.orientation.z = 0

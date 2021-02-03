@@ -61,7 +61,7 @@ class PathPlanner(object):
         self.local_path_pub = rospy.Publisher("/local_path", Path, queue_size=1)
         self.poses = []
 
-        self.cylinder_marker_pub_ = rospy.Publisher('/path/planner/cylinder_marker', Marker, queue_size=2)
+        self.cylinder_marker_pub_ = rospy.Publisher('/path_planner/cylinder_marker', Marker, queue_size=2)
 
         rospy.wait_for_service('stop_sampling')
         self.stop_srv_client_ = rospy.ServiceProxy('stop_sampling', Empty)
@@ -276,7 +276,6 @@ class PathPlanner(object):
         cylinder_scale = [pillar_radius*2, pillar_radius*2, pillar_top - points[:, 2].min()]
         self.cylinder_marker_ = self.create_cylinder_marker(pos=cylinder_pos, scale=cylinder_scale)
         self.got_cylinder_marker_ = True
-        print(self.cylinder_marker_)
         """
         # get target height (not real height, it's eigenvalue of the vertical vector)
         marker_q = (self.marker_.pose.orientation.x, self.marker_.pose.orientation.y, self.marker_.pose.orientation.z,
@@ -295,14 +294,6 @@ class PathPlanner(object):
         heights = [pillar_bottom + d * i + h1 for i in range(N)]
         n = 15  # number of waypoints on a circular path
         radius = pillar_radius + dist
-
-        print(pillar_top)
-        print(pillar_bottom)
-        print(h1)
-        print(h2)
-        print(N)
-        print(heights)
-        print(radius)
 
         ## get start position
         drone_position = np.asarray((self.current_pose_.pose.position.x, self.current_pose_.pose.position.y,
@@ -367,6 +358,7 @@ class PathPlanner(object):
                 break
         self.mapping = False
         # save pointcloud map
+        print('saving map')
         pc_map_msg = copy.copy(self.pc_map_)
         o3d_pc = convertCloudFromRosToOpen3d(pc_map_msg)
         pcd_name = os.path.join(self.pcd_path, str(self.id_) + ".pcd")

@@ -80,7 +80,7 @@ class TargetPoints(object):
         self.KL_D = 1e10  # KL divergence
         self.DE = 1e10  # differential entropy
         self.last_pose = Pose()
-        self.points_3d = np.random.rand(4, self.nm)
+        self.points_3d = np.random.rand(self.nm, 3)
         self.points_2d = np.zeros((self.nm, 2))
         self.marker = Marker()
         self.eigen_w = np.ones(3)  # eigen values
@@ -193,7 +193,7 @@ class TargetPoints(object):
         x = np.random.rand(self.nm) * (x_max - x_min) + x_min
         y = np.random.rand(self.nm) * (y_max - y_min) + y_min
         z = np.random.rand(self.nm) * (z_max - z_min) + z_min
-        x = np.linspace(x_min, x_max, self.nm)
+        # x = np.linspace(x_min, x_max, self.nm)
         # y = np.linspace(y_min, y_max, self.nm)
         # z = np.linspace(z_min, z_max, self.nm)
         new_points = np.asarray((x, y, z)).transpose()
@@ -422,7 +422,8 @@ class TargetTracker(object):
         self.trigger_localizing_DE = 3.
         self.trigger_resampling_KLD = 0.1
         self.trigger_mapping_KLD = 0.01
-        self.mapped_examine_flag = False
+        self.trigger_mapping_N = 3  # the minimum number of keyframes with satisfying KLD to trigger mapping
+        self.seq_examine_mapping = 0
         self.check_edge_box_boarder = 5
 
         self.pub_markers = rospy.Publisher("/target_localizer/ellipsoids", MarkerArray, queue_size=1)
@@ -559,8 +560,8 @@ class TargetTracker(object):
 
     def process_localizing(self, target):
         KLD, DE = target.get_statistic()
-        print('KLD: ', KLD)
-        print('DE: ', DE)
+        print('KLD: ' + str(KLD))
+        print('DE: ' + str(DE))
 
         if DE < self.trigger_localizing_DE:
             if self.uav_status == uav_status_dict['searching']:
@@ -569,13 +570,12 @@ class TargetTracker(object):
                 self.requestLocalizing()
             if (self.uav_status == uav_status_dict['localizing']) & \
                     (KLD <= self.trigger_mapping_KLD):
-                if not self.mapped_examine_flag:
-                    self.mapped_examine_flag = True
-                else:
+                self.seq_examine_mapping += 1
+                if self.seq_examine_mapping >= self.trigger_mapping_N:
                     target.set_localized()
-                    self.mapped_examine_flag = False
+                    self.seq_examine_mapping = 0
             else:
-                self.mapped_examine_flag = False
+                self.seq_examine_mapping = 0
 
     def process_false_localizing_examining(self, target):
         return
@@ -700,17 +700,19 @@ class TargetTracker(object):
 
     def publishTargetPoints(self):
         # convert target_points to pointcloud messages
-        if len(self.targets) > 0:
-            all_points = []
-            for target in self.targets:
-                all_points = all_points + target.get_points_3d().tolist()
+        # if len(self.targets) > 0:
+        all_points = []
+        for target in self.targets:
+            all_points = all_points + target.get_points_3d().tolist()
+        if len(all_points) == 0:
+            all_points = [[0, 0, 0]]
 
-            header = std_msgs.msg.Header()
-            header.stamp = rospy.Time.now()
-            header.frame_id = 'map'
-            # create pcl from points
-            pc_msg = pcl2.create_cloud_xyz32(header, all_points)
-            self.pcl_pub.publish(pc_msg)
+        header = std_msgs.msg.Header()
+        header.stamp = rospy.Time.now()
+        header.frame_id = 'map'
+        # create pcl from points
+        pc_msg = pcl2.create_cloud_xyz32(header, all_points)
+        self.pcl_pub.publish(pc_msg)
 
 
 if __name__ == '__main__':

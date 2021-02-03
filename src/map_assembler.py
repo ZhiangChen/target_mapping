@@ -46,7 +46,7 @@ def display_pcd(pcd=None, file_name=''):
 class MapAssembler(object):
     def __init__(self):
         self.map_pub = rospy.Publisher("/pbr_map", PointCloud2, queue_size=1)
-        self.timer = rospy.Timer(rospy.Duration(1), self.timerCallback)
+        self.timer = rospy.Timer(rospy.Duration(20), self.timerCallback)
         #self.pc_sub = rospy.Subscriber('/rtabmap/cloud_map', PointCloud2, self.callback, queue_size=1)
         rospy.loginfo("map_assembler has been initialized!")
 

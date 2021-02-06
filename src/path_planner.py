@@ -24,7 +24,7 @@ import tf
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import PointCloud2
 from rtabmap_ros.srv import ResetPose, ResetPoseRequest
-from utils.open3d_ros_conversion import convertCloudFromRosToOpen3d
+from utils.open3d_ros_conversion import convertCloudFromRosToOpen3d, convertCloudFromOpen3dToRos
 import open3d as o3d
 import rospkg
 import os
@@ -44,7 +44,10 @@ class PathPlanner(object):
         self.goal_position_ = Point()
         self.goal_yaw_ = 0
         self.plan_mode_ = 0
-        self.alpha = 40./180*np.pi
+        #self.alpha = 40. / 180 * np.pi  # granite dell
+        self.alpha = 45./180*np.pi  # blender terrain
+        #self.localizing_alpha = 40. / 180 * np.pi  # granite_dell
+        self.localizing_alpha = 60./180*np.pi  # blender terrain
         # self.alpha is the camera angle, which is supposed to be 60 degrees according to the camera mount angle.
         # However, if we set it as 60 degrees, the lower-bound scanning ray will be too long
         # For example, alpha = 60 degrees, half FoV = 20 degrees, distance to keep is 1.5 meters.
@@ -96,11 +99,10 @@ class PathPlanner(object):
 
 
     def startSearch(self):
-        #positions = np.asarray(((0, 0, 10), (-18, 0, 10), (0, 0, 6)))
-        #positions = np.asarray(((0, 0, 6), (-6, -6, 10), (0, 0, 5)))
-        positions = np.asarray(((0, 0, 24), (-15, 10, 24), (1, 12, 24), (0, 0, 20)))
-        #positions = self.lawnmower(pt1=(-50, -35), pt2=(50, 35), origin=(30, 38), spacing=5, vertical=True) # pt1=(-50, -35)
-        #positions = self.add_height(positions, 17.)  # for blender_terrain, [10, 15]
+        #positions = np.asarray(((0, 0, 24), (-15, 10, 24), (1, 12, 24), (0, 0, 20)))  # granite dell search path
+        positions = self.lawnmower(pt1=(50, 35), pt2=(-50, -35), origin=(30, 38), spacing=10, vertical=True) # pt1=(-50, -35)
+        #positions = self.lawnmower(pt1=(0, 35), pt2=(-50, -35), origin=(30, 38), spacing=10, vertical=True)  # pt1=(-50, -35)
+        positions = self.add_height(positions, 17.)  # for blender_terrain, [10, 17]
         yaws = self.getHeads(positions)
 
         assert positions.shape[0] == len(yaws)
@@ -179,7 +181,7 @@ class PathPlanner(object):
             result.success = self.getLocalizing()
             self.as_.set_succeeded(result)
         elif self.plan_mode_ == 2:
-            result.success = self.getMapping()
+            result = self.getMapping()
             self.as_.set_succeeded(result)
         elif self.plan_mode_ == 0:
             print("resuming")
@@ -227,7 +229,7 @@ class PathPlanner(object):
         drone_position = np.asarray((self.current_pose_.pose.position.x, self.current_pose_.pose.position.y, self.current_pose_.pose.position.z))
         h = self.current_pose_.pose.position.z
         circle_center = np.asarray((self.marker_.pose.position.x, self.marker_.pose.position.y, h))
-        radius = (h - marker_position[2])/np.tan(self.alpha)
+        radius = (h - marker_position[2])/np.tan(self.localizing_alpha)
 
         # 2. sample keypoints
         # from drone's closest point to the farthest point
@@ -267,10 +269,18 @@ class PathPlanner(object):
         marker_position = np.asarray((self.marker_.pose.position.x, self.marker_.pose.position.y, self.marker_.pose.position.z))
         # get target points
         points = np.asarray([(p.x, p.y, p.z) for p in self.marker_.points])
+        # extract points in 3 sigma
+        three_sigma_stds = points.std(axis=0) * 3
+        pillar_radius_0 = three_sigma_stds[:2].max()
+        pillar_top_0 = marker_position[2] + three_sigma_stds[2]
+        pillar_bottom_0 = marker_position[2] - three_sigma_stds[2]
         # approximate points with a pillar
-        pillar_radius = np.linalg.norm(points[:, :2] - marker_position[:2], axis=1).max()  # the radius can also be defined by Gaussian sigma distance
-        pillar_top = points[:, 2].max()
-        pillar_bottom = points[:, 2].min() #+ pillar_radius * np.tan(self.alpha)
+        pillar_radius_1 = np.linalg.norm(points[:, :2] - marker_position[:2], axis=1).max()  # the radius can also be defined by Gaussian sigma distance
+        pillar_top_1 = points[:, 2].max()
+        pillar_bottom_1 = points[:, 2].min() #+ pillar_radius * np.tan(self.alpha)
+        pillar_radius = min(pillar_radius_0, pillar_radius_1)
+        pillar_top = min(pillar_top_0, pillar_top_1)
+        pillar_bottom = min(pillar_bottom_0, pillar_bottom_1)
 
         cylinder_pos = marker_position
         cylinder_scale = [pillar_radius*2, pillar_radius*2, pillar_top - points[:, 2].min()]
@@ -303,6 +313,7 @@ class PathPlanner(object):
         ## get path points
         positions = []
         yaws = []
+        last_yaw = 0
         for i in range(N):
             center = np.asarray((marker_position[0], marker_position[1], heights[i]))
             p, y = self.circularPoints(dir_cp, center, radius, n)
@@ -361,15 +372,34 @@ class PathPlanner(object):
         print('saving map')
         pc_map_msg = copy.copy(self.pc_map_)
         o3d_pc = convertCloudFromRosToOpen3d(pc_map_msg)
+        # downsampling
+        o3d_pc = o3d_pc.voxel_down_sample(0.05)
+        # extract points in a sphere
+        sphere_center = cylinder_pos
+        sphere_radius = np.linalg.norm(np.asarray(cylinder_scale)/2.)
+        pts = np.asarray(o3d_pc.points)
+        clrs = np.asarray(o3d_pc.colors)
+        in_sphere_bools = [np.linalg.norm(pt - sphere_center) <= sphere_radius for pt in pts]
+        in_pts = pts[in_sphere_bools]
+        in_clrs = clrs[in_sphere_bools]
+        map_pcd = o3d.geometry.PointCloud()
+        map_pcd.points = o3d.utility.Vector3dVector(in_pts)
+        map_pcd.colors = o3d.utility.Vector3dVector(in_clrs)
         pcd_name = os.path.join(self.pcd_path, str(self.id_) + ".pcd")
-        o3d.io.write_point_cloud(pcd_name, o3d_pc)
+        o3d.io.write_point_cloud(pcd_name, map_pcd)
 
         self.newMap_srv_client_()
         self.deleteMap_srv_client_()
         self.pauseMap_srv_client_()
         self.got_cylinder_marker_ = False
 
-        return True
+        result = target_mapping.msg.TargetPlanResult()
+        if len(in_sphere_bools) > 0:
+            result.success = True
+            result.pointcloud_map = convertCloudFromOpen3dToRos(map_pcd, 'map')
+        else:
+            result.success = False
+        return result
 
     def circularPoints(self, dir_cp, center, radius, n):
         positions = []
@@ -405,6 +435,14 @@ class PathPlanner(object):
 
 
     def lawnmower(self, pt1, pt2, origin, spacing, vertical):
+        """
+        :param pt1: start point (x, y)
+        :param pt2: end point (x, y)
+        :param origin: uav origin (x, y)
+        :param spacing:
+        :param vertical:
+        :return:
+        """
         origin = np.array(origin)
         pt1 = np.array(pt1) - origin
         pt2 = np.array(pt2) - origin
@@ -414,6 +452,8 @@ class PathPlanner(object):
         length = y2 - y1
         waypoints = [np.array((0., 0.)), pt1]
         if vertical:
+            if width < 0:
+                spacing = - spacing
             N = int(width / spacing / 2)
             for i in range(N):
                 pt_0 = waypoints[-1]
@@ -426,6 +466,8 @@ class PathPlanner(object):
                 waypoints.append(pt_3)
                 waypoints.append(pt_4)
         else:
+            if length < 0:
+                spacing = - spacing
             N = int(length / spacing / 2)
             for i in range(N):
                 pt_0 = waypoints[-1]

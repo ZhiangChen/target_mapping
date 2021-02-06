@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <launch>
-	<include file="$(find darknet_ros)/launch/darknet_ros_granite_dell_pbr.launch" />
+	<!--include file="$(find darknet_ros)/launch/darknet_ros_granite_dell_pbr.launch" /-->
+	<include file="$(find darknet_ros)/launch/darknet_ros_blender_terrain_pbr.launch" />
 
 	<node name="drop_detection" pkg="topic_tools" type="drop" args="/bbox_tracker/bounding_boxes 2 3">
 	</node>

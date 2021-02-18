@@ -1,0 +1,18 @@
+half_vfov: 0.3490658503988659 #20/180.*np.pi # half vertical fov for mapping
+trans_threshold: 1.5  # keyframe selection (trans)
+rot_threshold: 0.5235987755982988  # 30/180.*np.pi # keyframe selection (rot)
+nm: 2000  # number of 3D points per target
+
+# granite dell
+z_min: 3 
+z_max: 18
+trigger_converging_DE: 3. 
+alpha: 0.6981317007977318  # 40. / 180 * np.pi  # z axis for mapping
+bcem_alpha: 0.6981317007977318  # z axis for b-cylinder estimation motion
+
+# blender terrain
+#z_min: 6
+#z_max: 23
+#trigger_converging_DE: 2.65  # blender terrain
+#alpha: 0.7853981633974483  # 45./180*np.pi  # blender terrain
+#bcem_alpha: 1.0471975511965976  # 60./180*np.pi  # blender terrain

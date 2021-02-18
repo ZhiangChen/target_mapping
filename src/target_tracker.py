@@ -9,6 +9,7 @@ import sys
 import os
 import rospy
 import rospkg
+import yaml
 from darknet_ros_msgs.msg import BoundingBoxes
 from darknet_ros_msgs.msg import ObjectCount
 from sensor_msgs.msg import Image
@@ -43,28 +44,32 @@ from utils.open3d_ros_conversion import convertCloudFromRosToOpen3d, convertClou
 ROS_BAG = True
 
 target_status_dict = {'mapped': 0,
-                      'localized': 1,
-                      'pre_localizing': 3,
-                      'false_localizing': 4,
-                      'false_localizing_examining': 5,
-                      'localizing': 6}
+                      'converged': 1,
+                      'pre_tracking': 3,
+                      'false_tracking': 4,
+                      'false_tracking_examining': 5,
+                      'b_cylinder_estimating': 6}
 
 uav_status_dict = {'searching': 0,
-                   'localizing': 1,
+                   'b_cylinder_estimating_motion': 1,
                    'mapping': 2}
 
-update_status_dict = {'localized': 0,
+update_status_dict = {'converged': 0,
                       'true_keyframe': 1,
                       'false_keyframe': 2,
                       'mapped': 3}
 
+rp = rospkg.RosPack()
+pkg_path = rp.get_path('target_mapping')
+config_path = os.path.join(pkg_path, 'config', 'target_mapping.yaml')
+yaml_file = open(config_path)
+params = yaml.load(yaml_file, Loader=yaml.FullLoader)
+
 class TargetPoints(object):
     def __init__(self, camera_model, T_camera2base, hit_updating_N=6, missed_hit_M=10):
-        self.nm = 2000
-        #self.z_min = 3  # granite dell # the range of particles along z axis in camera coord system
-        #self.z_max = 18
-        self.z_min = 6  # blender terrain
-        self.z_max = 23
+        self.nm = params['nm']
+        self.z_min = params['z_min']  # the range of particles along z axis in camera coord system
+        self.z_max = params['z_max']
         self.noise_z = 0.1
         self.noise_xy = 0.1
         self.boarder = 10
@@ -81,8 +86,8 @@ class TargetPoints(object):
         self.missed_hit_M = missed_hit_M  # the maximum hit number missed in tracking
         self.hit_updating = 0  # hit number of points updating
         self.hit_updating_N = hit_updating_N  # the minimum hit updating number to enable localizing
-        self.trans_threshold = 1.5
-        self.rot_threshold = 30/180.*np.pi
+        self.trans_threshold = params['trans_threshold']
+        self.rot_threshold = params['rot_threshold']
         self.KL_D = 1e10  # KL divergence
         self.DE = 1e10  # differential entropy
         self.last_pose = Pose()
@@ -110,7 +115,7 @@ class TargetPoints(object):
             return update_status_dict['mapped']
 
         if self.localized:
-            return update_status_dict['localized']
+            return update_status_dict['converged']
 
         if self.assert_keyframe(pose):
             self.importance_sampling(bbox)
@@ -297,29 +302,29 @@ class TargetPoints(object):
             return target_status_dict['mapped']
 
         if self.localized:
-            return target_status_dict['localized']
+            return target_status_dict['converged']
 
         if self.hit_updating < self.hit_updating_N:
             if not self.false_localization_redflag:
                 if (self.check_seq - self.hit_updating) > self.missed_hit_M:
                     self.false_localization_redflag = True
                     self.reset_status()
-                    return target_status_dict['false_localizing_examining']
+                    return target_status_dict['false_tracking_examining']
                 else:
-                    return target_status_dict['pre_localizing']
+                    return target_status_dict['pre_tracking']
             else:
                 if self.check_seq > self.missed_hit_M:
-                    return target_status_dict['false_localizing']
+                    return target_status_dict['false_tracking']
                 else:
-                    return target_status_dict['false_localizing_examining']
+                    return target_status_dict['false_tracking_examining']
 
         if (self.check_seq - self.hit_updating) > self.missed_hit_M:
             self.false_localization_redflag = True
             self.reset_status()
-            return target_status_dict['false_localizing_examining']
+            return target_status_dict['false_tracking_examining']
         else:
             self.false_localization_redflag = False
-            return target_status_dict['localizing']
+            return target_status_dict['b_cylinder_estimating']
 
     def reset_status(self):
         self.check_seq = 0
@@ -406,13 +411,12 @@ class TargetTracker(object):
         self.uav_status = uav_status_dict['searching']
         self.seq = 0
         self.process_status = {target_status_dict['mapped']: self.process_mapped,
-                               target_status_dict['localized']: self.process_localized,
-                               target_status_dict['pre_localizing']: self.process_pre_localizing,
-                               target_status_dict['false_localizing']: self.process_false_localizing,
-                               target_status_dict['localizing']: self.process_localizing,
-                               target_status_dict['false_localizing_examining']: self.process_false_localizing_examining}
-        #self.trigger_localizing_DE = 3.  # granite dell
-        self.trigger_localizing_DE = 2.65  # blender terrain
+                               target_status_dict['converged']: self.process_converged,
+                               target_status_dict['pre_tracking']: self.process_pre_tracking,
+                               target_status_dict['false_tracking']: self.process_false_tracking,
+                               target_status_dict['b_cylinder_estimating']: self.process_tracking,
+                               target_status_dict['false_tracking_examining']: self.process_false_tracking_examining}
+        self.trigger_converging_DE = params['trigger_converging_DE']
         self.trigger_resampling_KLD = 0.1
         self.trigger_mapping_KLD = 0.01
         self.trigger_mapping_N = 3  # the minimum number of keyframes with satisfying KLD to trigger mapping
@@ -420,7 +424,7 @@ class TargetTracker(object):
         self.check_edge_box_boarder = 5
         self.target_spacing_threshold = 1.  # mapping will be skipped if the target center distance are smaller than this value
 
-        self.pub_markers = rospy.Publisher("/target_localizer/ellipsoids", MarkerArray, queue_size=1)
+        self.pub_markers = rospy.Publisher("/target_tracker/ellipsoids", MarkerArray, queue_size=1)
         self.client = actionlib.SimpleActionClient("/path_planner/target_plan", target_mapping.msg.TargetPlanAction)
         #self.client.wait_for_server()
 
@@ -429,7 +433,7 @@ class TargetTracker(object):
         if self.publish_image:
             self.update_img = False
             self.bridge = CvBridge()
-            self.pub = rospy.Publisher("/target_localizer/detection_image", Image, queue_size=1)
+            self.pub = rospy.Publisher("/target_tracker/detection_image", Image, queue_size=1)
             #raw_image_sub = rospy.Subscriber('/bbox_tracker/detection_image', Image, self.image_callback, queue_size=1)
             raw_image_sub = rospy.Subscriber('/darknet_ros/detection_image', Image, self.image_callback, queue_size=2)
             self.img = np.zeros(1)
@@ -454,7 +458,7 @@ class TargetTracker(object):
         self.T_camera2base = np.matmul(trans, rot)
 
 
-        self.pcl_pub = rospy.Publisher("/target_localizer/points", PointCloud2, queue_size=10)
+        self.pcl_pub = rospy.Publisher("/target_tracker/points", PointCloud2, queue_size=10)
 
         camera_info = rospy.wait_for_message("/r200/rgb/camera_info", CameraInfo)
         self.pinhole_camera_model = PinholeCameraModel()
@@ -481,7 +485,7 @@ class TargetTracker(object):
         # self.ts = message_filters.TimeSynchronizer([self.sub_bbox, self.sub_pose], 10)
         # self.ts1.registerCallback(self.callback1)
 
-        print("target_localizer initialized!")
+        print("target_tracker initialized!")
 
     def timerCallback(self, timer):
         self.publishTargetPoints()
@@ -490,7 +494,7 @@ class TargetTracker(object):
         for id in reversed(range(N)):
             target = self.targets[id]
             target_status = target.check_status()
-            if target_status == target_status_dict['false_localizing']:
+            if target_status == target_status_dict['false_tracking']:
                 self.processing_target_id = id
                 target = self.targets[self.processing_target_id]
                 print("target id: " + str(self.processing_target_id))
@@ -513,7 +517,7 @@ class TargetTracker(object):
                     if target.check_points_in_bbox(bbox, self.pose):
                         bbox_in_target_bools.append(True)
                         update_status = target.update_points(bbox, self.pose)
-                        if update_status == update_status_dict['localized']:
+                        if update_status == update_status_dict['converged']:
                             enable_localization = True  # enable localizeTarget
                         if update_status == update_status_dict['true_keyframe']:
                             enable_localization = True
@@ -566,7 +570,7 @@ class TargetTracker(object):
         for id in reversed(range(N)):
             target = self.targets[id]
             target_status = target.check_status()
-            if target_status == target_status_dict['false_localizing']:
+            if target_status == target_status_dict['false_tracking']:
                 self.processing_target_id = id
                 target = self.targets[self.processing_target_id]
                 print("target id: " + str(self.processing_target_id))
@@ -574,19 +578,19 @@ class TargetTracker(object):
 
         target_statuses = [target.check_status(update_seq=False) for target in self.targets]
         for id, target_status in enumerate(target_statuses):
-            if target_status == target_status_dict['localized']:
+            if target_status == target_status_dict['converged']:
                 self.processing_target_id = id
                 target = self.targets[self.processing_target_id]
                 # check if the target has already been mapped
                 if self.assert_mapped_by_others(id, target_statuses):
-                    self.process_status[target_status_dict['false_localizing']](target)
+                    self.process_status[target_status_dict['false_tracking']](target)
                 else:
                     # else, then map
                     print("target id: " + str(self.processing_target_id))
                     self.process_status[target_status](target)
 
         for id, target_status in enumerate(target_statuses):
-            if target_status == target_status_dict['localizing']:
+            if target_status == target_status_dict['b_cylinder_estimating']:
                 self.processing_target_id = id
                 target = self.targets[self.processing_target_id]
                 print("target id: " + str(self.processing_target_id))
@@ -594,22 +598,22 @@ class TargetTracker(object):
                 self.update_img = True
 
 
-    def process_pre_localizing(self, target):
+    def process_pre_tracking(self, target):
         pass
 
-    def process_localizing(self, target):
+    def process_tracking(self, target):
         KLD, DE = target.get_statistic()
         print('KLD: ' + str(KLD))
         print('DE: ' + str(DE))
 
-        if DE < self.trigger_localizing_DE:
+        if DE < self.trigger_converging_DE:
             if self.uav_status == uav_status_dict['searching']:
                 #target.resampling_uniform_dist()
                 #target.expanded_resampling_uniform_dist()
                 self.requestLocalizing()
                 self.localizing_target_id = self.processing_target_id
                 rospy.sleep(2.)
-            if (self.uav_status == uav_status_dict['localizing']) & \
+            if (self.uav_status == uav_status_dict['b_cylinder_estimating_motion']) & \
                     (KLD <= self.trigger_mapping_KLD):
                 self.seq_examine_mapping += 1
                 if self.seq_examine_mapping >= self.trigger_mapping_N:
@@ -619,22 +623,22 @@ class TargetTracker(object):
                 self.seq_examine_mapping = 0
 
 
-    def process_false_localizing_examining(self, target):
+    def process_false_tracking_examining(self, target):
         return
 
-    def process_false_localizing(self, target):
-        rospy.loginfo('false localizing')
+    def process_false_tracking(self, target):
+        rospy.loginfo('false tracking')
         del self.targets[self.processing_target_id]
         if self.uav_status != uav_status_dict['searching']:
             print("processing target id: " + str(self.processing_target_id))
-            print("localizing target id: " + str(self.localizing_target_id))
+            print("tracking target id: " + str(self.localizing_target_id))
             if self.processing_target_id == self.localizing_target_id:
                 self.continueSearch()
             if self.processing_target_id < self.localizing_target_id:
                 self.localizing_target_id -= 1
 
 
-    def process_localized(self, target):
+    def process_converged(self, target):
         result = self.requestMapping()
         if result.success:
             rospy.loginfo('mapped')
@@ -654,14 +658,14 @@ class TargetTracker(object):
         print('mapped')
 
     def requestLocalizing(self):
-        rospy.loginfo('requesting localizing')
+        rospy.loginfo('requesting b-cylinder estimating')
         goal = target_mapping.msg.TargetPlanGoal()
         goal.header.stamp = rospy.Time.now()
         goal.id.data = self.processing_target_id
-        goal.mode.data = uav_status_dict['localizing']
+        goal.mode.data = uav_status_dict['b_cylinder_estimating_motion']
         goal.markers = self.markers
         self.client.send_goal(goal)
-        self.uav_status = uav_status_dict['localizing']
+        self.uav_status = uav_status_dict['b_cylinder_estimating_motion']
 
     def requestMapping(self):
         rospy.loginfo('requesting mapping')
@@ -792,7 +796,7 @@ class TargetTracker(object):
 
 
 if __name__ == '__main__':
-    rospy.init_node('target_localizer', anonymous=False)
+    rospy.init_node('target_tracker', anonymous=False)
     target_tracker = TargetTracker()
 
     try:

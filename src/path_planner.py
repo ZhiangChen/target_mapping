@@ -27,10 +27,17 @@ from rtabmap_ros.srv import ResetPose, ResetPoseRequest
 from utils.open3d_ros_conversion import convertCloudFromRosToOpen3d, convertCloudFromOpen3dToRos
 import open3d as o3d
 import rospkg
+import yaml
 import os
 import time
 import matplotlib.pyplot as plt
 import visualization_msgs
+
+rp = rospkg.RosPack()
+pkg_path = rp.get_path('target_mapping')
+config_path = os.path.join(pkg_path, 'config', 'target_mapping.yaml')
+yaml_file = open(config_path)
+params = yaml.load(yaml_file, Loader=yaml.FullLoader)
 
 class PathPlanner(object):
     def __init__(self):
@@ -44,10 +51,9 @@ class PathPlanner(object):
         self.goal_position_ = Point()
         self.goal_yaw_ = 0
         self.plan_mode_ = 0
-        #self.alpha = 40. / 180 * np.pi  # granite dell
-        self.alpha = 45./180*np.pi  # blender terrain
-        #self.localizing_alpha = 40. / 180 * np.pi  # granite_dell
-        self.localizing_alpha = 60./180*np.pi  # blender terrain
+        self.alpha = params['alpha']
+        self.bcem_alpha = params['bcem_alpha']
+        self.half_vfov = params['half_vfov']  # half vertical fov for mapping
         # self.alpha is the camera angle, which is supposed to be 60 degrees according to the camera mount angle.
         # However, if we set it as 60 degrees, the lower-bound scanning ray will be too long
         # For example, alpha = 60 degrees, half FoV = 20 degrees, distance to keep is 1.5 meters.
@@ -99,10 +105,10 @@ class PathPlanner(object):
 
 
     def startSearch(self):
-        #positions = np.asarray(((0, 0, 24), (-15, 10, 24), (1, 12, 24), (0, 0, 20)))  # granite dell search path
-        positions = self.lawnmower(pt1=(50, 35), pt2=(-50, -35), origin=(30, 38), spacing=10, vertical=True) # pt1=(-50, -35)
+        positions = np.asarray(((0, 0, 24), (-15, 10, 24), (1, 12, 24), (0, 0, 20)))  # granite dell search path
+        #positions = self.lawnmower(pt1=(50, 35), pt2=(-50, -35), origin=(30, 38), spacing=10, vertical=True) # pt1=(-50, -35)
         #positions = self.lawnmower(pt1=(0, 35), pt2=(-50, -35), origin=(30, 38), spacing=10, vertical=True)  # pt1=(-50, -35)
-        positions = self.add_height(positions, 17.)  # for blender_terrain, [10, 17]
+        #positions = self.add_height(positions, 17.)  # for blender_terrain, [10, 17]
         yaws = self.getHeads(positions)
 
         assert positions.shape[0] == len(yaws)
@@ -178,7 +184,7 @@ class PathPlanner(object):
 
         result = target_mapping.msg.TargetPlanResult()
         if self.plan_mode_ == 1:
-            result.success = self.getLocalizing()
+            result.success = self.get_bcylinder_estimating_motion()
             self.as_.set_succeeded(result)
         elif self.plan_mode_ == 2:
             result = self.getMapping()
@@ -216,8 +222,8 @@ class PathPlanner(object):
             result.success = True
             self.as_.set_succeeded(result)
 
-    def getLocalizing(self):
-        print('localizing')
+    def get_bcylinder_estimating_motion(self):
+        print('b-cylinder estimation motion')
         # 1. generate a circle
         # use the center of the marker, (x, y),
         # and the current drone height, (h), as the circle center, (x, y, h).
@@ -229,7 +235,7 @@ class PathPlanner(object):
         drone_position = np.asarray((self.current_pose_.pose.position.x, self.current_pose_.pose.position.y, self.current_pose_.pose.position.z))
         h = self.current_pose_.pose.position.z
         circle_center = np.asarray((self.marker_.pose.position.x, self.marker_.pose.position.y, h))
-        radius = (h - marker_position[2])/np.tan(self.localizing_alpha)
+        radius = (h - marker_position[2])/np.tan(self.bcem_alpha)
 
         # 2. sample keypoints
         # from drone's closest point to the farthest point
@@ -264,7 +270,7 @@ class PathPlanner(object):
 
 
     def getMapping(self):
-        print('mapping')
+        print('mapping motion')
         # get target position
         marker_position = np.asarray((self.marker_.pose.position.x, self.marker_.pose.position.y, self.marker_.pose.position.z))
         # get target points
@@ -296,7 +302,7 @@ class PathPlanner(object):
         # map plan: sweep from bottom to top
         ## get circular planes
         dist = 1.5  # distance to keep between drone and the closest pillar surface
-        half_vfov = 20. / 180 * np.pi
+        half_vfov = self.half_vfov
         h1 = dist * np.tan(self.alpha + half_vfov)
         h2 = dist * np.tan(self.alpha - half_vfov)
         d = h1 - h2
@@ -509,9 +515,7 @@ class PathPlanner(object):
         marker.header.stamp = rospy.Time.now()
         marker.ns = "target_mapping"
         marker.id = 0
-        # marker.type = visualization_msgs.msg.Marker.MESH_RESOURCE
         marker.type = visualization_msgs.msg.Marker.CYLINDER
-        # marker.mesh_resource = "package://gazebo_sim_models/models/granite_dell/granite_dell.dae"
         marker.action = visualization_msgs.msg.Marker.ADD
         marker.scale.x = scale[0]
         marker.scale.y = scale[1]

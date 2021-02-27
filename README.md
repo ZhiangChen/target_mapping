@@ -4,7 +4,6 @@ Apache License 2.0 (c) 2020 Distributed Robotic Exploration and Mapping Systems 
 Zhiang Chen, Jan 2020
 
 _Find more info can be found on [Github Wiki](https://github.com/ZhiangChen/target_tracking/wiki)_  
-_and our paper [Localization and Mapping of Sparse Geologic Features with Unpiloted Aircraft Systems](https://arxiv.org/pdf/2007.01220.pdf)_
 
 
 ## Overview

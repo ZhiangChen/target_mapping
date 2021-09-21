@@ -26,8 +26,8 @@ from ctypes import *  # convert float to uint32
 import rospy
 from std_msgs.msg import Header
 from sensor_msgs.msg import PointCloud2, PointField
-#import sensor_msgs.point_cloud2 as pc2
-import pc2
+import sensor_msgs.point_cloud2 as pc2  #python3
+#import pc2  #python2
 
 # The data structure of each point in ros PointCloud2: 16 bits = x + y + z + rgb
 FIELDS_XYZ = [

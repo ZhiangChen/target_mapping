@@ -68,6 +68,9 @@ sensor_msgs
  add_action_files(
    FILES
    TargetPlan.action
+   SaveZedMap.action
+   StartZedMapping.action
+   StopZedMapping.action
  )
 
 ## Generate added messages and services with any dependencies listed here
